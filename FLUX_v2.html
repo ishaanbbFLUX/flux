@@ -1384,7 +1384,26 @@ function fmo(n,sg=false){const a=Math.abs(n);const s=a.toLocaleString('en-US',{m
 
 function adv(d,freq){const r=new Date(d);switch(freq){case'daily':r.setDate(r.getDate()+1);break;case'weekly':r.setDate(r.getDate()+7);break;case'biweekly':r.setDate(r.getDate()+14);break;case'monthly':r.setMonth(r.getMonth()+1);break;case'quarterly':r.setMonth(r.getMonth()+3);break;case'yearly':r.setFullYear(r.getFullYear()+1);break}return r}
 
-function getOcc(tx,s,e){const res=[];const txd=pd(tx.date);if(!tx.isRecurring&&!tx.recurring){if(txd>=s&&txd<=e)res.push(new Date(txd));return res}let cur=new Date(txd);if(cur>e)return res;while(cur<s)cur=adv(cur,tx.frequency||'monthly');while(cur<=e){res.push(new Date(cur));cur=adv(cur,tx.frequency||'monthly')}return res}
+function getOcc(tx,s,e){
+  const res=[];
+  const txd=pd(tx.date);
+  if(!tx.isRecurring&&!tx.recurring){
+    if(txd>=s&&txd<=e)res.push(new Date(txd));
+    return res;
+  }
+  let cur=new Date(txd);
+  if(cur>e)return res;
+  // Respect end date — stop projecting after final payment date
+  var endLimit=tx.endDate?new Date(tx.endDate+'T23:59:59'):null;
+  if(endLimit&&cur>endLimit)return res;
+  while(cur<s)cur=adv(cur,tx.frequency||'monthly');
+  while(cur<=e){
+    if(endLimit&&cur>endLimit)break;
+    res.push(new Date(cur));
+    cur=adv(cur,tx.frequency||'monthly');
+  }
+  return res;
+}
 
 function getAllTxs(){return[...S.csvTxs,...S.transactions]}
 
@@ -1475,15 +1494,16 @@ function getDayTxs(year,month,day){
       projections.push(Object.assign({},tx,{_projected:true}));
     }
   });
-  // Goal auto-allocations projected to this date
+  // Goal auto-allocations — start from createdDate, end on targetDate
   S.goals.filter(function(g){return!g.completed&&g.autoAllocate&&(g.monthlyAllocation||0)>0;}).forEach(function(g){
     var freq=g.allocateFrequency||'monthly';
-    var allocDay=g.allocateDay||1;
-    var baseDate=new Date(foreYear||s.getFullYear(),foreMonth!==undefined?foreMonth:s.getMonth(),allocDay);
+    // Use creation date as start so allocations don't project into the past before goal existed
+    var startDate=g.createdDate||new Date().toISOString().substring(0,10);
     var goalTx={id:'goal_'+g.id,name:g.name+' — Goal',description:g.name+' Goal Allocation',
       amount:-(g.monthlyAllocation),category:'Goals',type:'goal',isGoal:true,
       recurring:true,isRecurring:true,frequency:freq,
-      date:baseDate.getFullYear()+'-'+String(baseDate.getMonth()+1).padStart(2,'0')+'-'+String(allocDay).padStart(2,'0'),
+      date:startDate,
+      endDate:g.targetDate||null,
       _goalColor:g.color||'#d97706'};
     if(getOcc(goalTx,s,e).length)projections.push(goalTx);
   });
@@ -1795,7 +1815,15 @@ function txRow(tx){
 <div class="t-mt">
 <span>${fd(tx.date)}</span>
 <span class="t-cb" style="background:${(CAT_COLORS[cat]||'#94a3b8')}18;color:${CAT_COLORS[cat]||'#94a3b8'}">${cat}</span>
-${tx.isRecurring||tx.recurring?'<span class="t-rec">↻ recurring</span>':''}
+${tx.isRecurring||tx.recurring?(function(){
+  var recLabel='↻ '+(tx.frequency||'recurring');
+  if(tx.endDate){
+    var remaining=0;var cur=new Date(tx.date+'T12:00:00');var end=new Date(tx.endDate+'T23:59:59');var now=new Date();
+    while(cur<=end){if(cur>=now)remaining++;cur=adv(cur,tx.frequency||'monthly');}
+    recLabel+=' · ends '+fd(tx.endDate)+(remaining>0?' ('+remaining+' left)':' ✓ complete');
+  }
+  return '<span class="t-rec">'+recLabel+'</span>';
+})():''}
 ${isTrf?'<span style="font-size:9.5px;color:#64748b;background:#f1f5f9;padding:1px 5px;border-radius:3px;font-weight:600">TRANSFER</span>':''}
 ${acctInfo?`<span style="font-size:9.5px;color:var(--tx3)">••••${tx.account}</span>`:''}
 ${tx.isBill&&!isTrf?'<span class="badge b-bill" style="font-size:9px">BILL</span>':''}
@@ -2635,7 +2663,7 @@ function renderUFModal(){
 
   } else if(_ufType === 'goals'){
     var colorSwatches = GOAL_COLS.map(function(c){
-      return '<div onclick="selectGoalColor(\''+c.hex+'\')" data-hex="'+c.hex+'" title="'+c.name+'" style="width:26px;height:26px;border-radius:50%;background:'+c.hex+';cursor:pointer;border:2px solid transparent;transition:transform .15s" id="gsw-'+c.hex.replace('#','')+'" onmouseover="this.style.transform=\'scale(1.2)\'" onmouseout="this.style.transform=\'scale(1)\'"></div>';
+      return '<div onclick="selectGoalColorEdit(\''+c.hex+'\')" data-hex="'+c.hex+'" title="'+c.name+'" style="width:26px;height:26px;border-radius:50%;background:'+c.hex+';cursor:pointer;border:2px solid transparent;transition:transform .15s" id="gsw-'+c.hex.replace('#','')+'" onmouseover="this.style.transform=\'scale(1.2)\'" onmouseout="this.style.transform=\'scale(1)\'"></div>';
     }).join('');
     body = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">'
     +'<div><label style="font-size:11.5px;font-weight:700;color:#475569;display:block;margin-bottom:5px">Goal Name *</label><input id="uf-g-name" placeholder="e.g. Emergency Fund" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;box-sizing:border-box"></div>'
@@ -2679,6 +2707,7 @@ function renderUFModal(){
     var prefillRec  = existingTx ? (existingTx.recurring||existingTx.isRecurring||false) : false;
     var prefillFreq = existingTx ? (existingTx.frequency||'monthly') : 'monthly';
     var prefillLbl  = existingTx ? (existingTx.label||autoLabel(existingTx)||'') : '';
+    var prefillEnd  = existingTx ? (existingTx.endDate||'') : '';
     var allAccounts = getAllAccounts();
     body = '<div style="margin-bottom:10px"><label style="font-size:11.5px;font-weight:700;color:#475569;display:block;margin-bottom:5px">Name / Description *</label>'
     +'<input id="uf-tx-name" value="'+prefillName+'" placeholder="'+(isInc?'Employer, Client...':isTrf?'Transfer to/from...':'Merchant, Store...')+'" autocomplete="off" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;box-sizing:border-box;font-family:Plus Jakarta Sans,sans-serif"></div>'
@@ -2693,7 +2722,13 @@ function renderUFModal(){
     +'<select id="uf-tx-acct" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:Plus Jakarta Sans,sans-serif"><option value="">Manual Entry</option>'+Object.entries(allAccounts).map(function(e){return'<option value="'+e[0]+'"'+(e[0]===prefillAcct?' selected':'')+'>'+e[1].short+' ••••'+e[0]+'</option>';}).join('')+'</select></div>'
     +'</div>'
     +(!isTrf?'<div style="margin-bottom:10px;display:flex;align-items:center;gap:10px"><input type="checkbox" id="uf-tx-rec"'+(prefillRec?' checked':'')+' style="width:16px;height:16px;accent-color:#2563eb;cursor:pointer" onchange="document.getElementById(\'uf-tx-freq-wrap\').style.display=this.checked?\'block\':\'none\'"><label for="uf-tx-rec" style="font-size:13px;cursor:pointer;color:#0f172a">Repeating transaction</label></div>'
-    +'<div id="uf-tx-freq-wrap" style="display:'+(prefillRec?'block':'none')+';margin-bottom:10px"><label style="font-size:11.5px;font-weight:700;color:#475569;display:block;margin-bottom:5px">Frequency</label><select id="uf-tx-freq" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:Plus Jakarta Sans,sans-serif">'+['weekly','biweekly','monthly','quarterly','yearly'].map(function(f){return'<option value="'+f+'"'+(f===prefillFreq?' selected':'')+'>'+f.charAt(0).toUpperCase()+f.slice(1)+'</option>';}).join('')+'</select></div>'
+    +'<div id="uf-tx-freq-wrap" style="display:'+(prefillRec?'block':'none')+';margin-bottom:10px">'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+    +'<div><label style="font-size:11.5px;font-weight:700;color:#475569;display:block;margin-bottom:5px">Frequency</label><select id="uf-tx-freq" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:Plus Jakarta Sans,sans-serif">'+['weekly','biweekly','monthly','quarterly','yearly'].map(function(f){return'<option value="'+f+'"'+(f===prefillFreq?' selected':'')+'>'+f.charAt(0).toUpperCase()+f.slice(1)+'</option>';}).join('')+'</select></div>'
+    +'<div><label style="font-size:11.5px;font-weight:700;color:#475569;display:block;margin-bottom:5px">Final Payment Date <span style="font-weight:400;color:#94a3b8">(optional)</span></label><input id="uf-tx-end" type="date" value="'+prefillEnd+'" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;box-sizing:border-box"></div>'
+    +'</div>'
+    +'<div style="font-size:11px;color:#94a3b8;margin-top:5px">💡 Set for Affirm, Klarna, or any installment plan — projections stop after this date.</div>'
+    +'</div>'
     +'<div style="margin-bottom:10px"><label style="font-size:11.5px;font-weight:700;color:#475569;display:block;margin-bottom:5px">Label</label><div style="display:flex;gap:6px" id="uf-lbl-row">'
     +['need','want','save'].map(function(l){var map={need:{txt:'Need',cls:'lbl-need',bc:'#bfdbfe',bg:'#eff6ff',col:'#2563eb'},want:{txt:'Want',cls:'lbl-want',bc:'#ddd6fe',bg:'#f5f3ff',col:'#7c3aed'},save:{txt:'Savings',cls:'lbl-save',bc:'#bbf7d0',bg:'#f0fdf4',col:'#16a34a'}};var info=map[l];var isSel=prefillLbl===l;return'<button type="button" id="uf-lbl-'+l+'" onclick="ufPickLbl(\''+l+'\')" style="padding:5px 12px;border-radius:12px;border:1.5px solid '+info.bc+';background:'+info.bg+';color:'+info.col+';font-size:11px;font-weight:700;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif'+(isSel?';outline:2px solid #0f172a;outline-offset:2px':'')+'">'+ info.txt+'</button>';}).join('')
     +'</div><input type="hidden" id="uf-tx-label" value="'+prefillLbl+'"></div>':'')
@@ -2767,6 +2802,7 @@ function saveUFGoal(){
     }
     S.goals.push({id:String(Date.now()),name:name,targetAmount:target,savedAmount:saved,
       icon:icon,color:color,targetDate:dateVal||null,
+      createdDate:new Date().toISOString().substring(0,10),
       monthlyAllocation:allocAmt,autoAllocate:autoAlloc,
       allocateFrequency:allocFreq,allocateDay:1,
       category:'Savings',completed:saved>=target});
@@ -2802,6 +2838,8 @@ function saveUFTx(){
     var rec=recEl?recEl.checked:false;
     var freqEl=document.getElementById('uf-tx-freq');
     var freq=(rec&&freqEl)?freqEl.value:'monthly';
+    var endEl=document.getElementById('uf-tx-end');
+    var endDate=(rec&&endEl&&endEl.value)?endEl.value:null;
     var lblEl=document.getElementById('uf-tx-label');
     var label=lblEl?lblEl.value:null;
     var type=_ufType||'purchase';
@@ -2819,12 +2857,12 @@ function saveUFTx(){
       var manIdx=S.transactions.findIndex(function(t){return t.id===editId;});
       if(csvIdx>=0){
         var orig=S.csvTxs[csvIdx];
-        S.csvTxs[csvIdx]=Object.assign({},orig,{name:name,description:name,amount:finalAmt,date:date,category:cat,type:type,isIncome:isInc,isTransfer:isTrf,isBill:type==='bill',recurring:rec,isRecurring:rec,frequency:freq,account:acct||orig.account,label:label||orig.label||null,_edited:true});
+        S.csvTxs[csvIdx]=Object.assign({},orig,{name:name,description:name,amount:finalAmt,date:date,category:cat,type:type,isIncome:isInc,isTransfer:isTrf,isBill:type==='bill',recurring:rec,isRecurring:rec,frequency:freq,endDate:endDate,account:acct||orig.account,label:label||orig.label||null,_edited:true});
       } else if(manIdx>=0){
-        S.transactions[manIdx]=Object.assign({},S.transactions[manIdx],{name:name,description:name,amount:finalAmt,date:date,category:cat,type:type,isIncome:isInc,isTransfer:isTrf,isBill:type==='bill',recurring:rec,isRecurring:rec,frequency:freq,account:acct||null,label:label||null});
+        S.transactions[manIdx]=Object.assign({},S.transactions[manIdx],{name:name,description:name,amount:finalAmt,date:date,category:cat,type:type,isIncome:isInc,isTransfer:isTrf,isBill:type==='bill',recurring:rec,isRecurring:rec,frequency:freq,endDate:endDate,account:acct||null,label:label||null});
       }
     } else {
-      S.transactions.push({id:String(Date.now()),name:name,description:name,amount:finalAmt,date:date,category:cat,type:type,recurring:rec,isRecurring:rec,frequency:freq,isIncome:isInc,isTransfer:isTrf,isBill:type==='bill',account:acct||null,label:label||null,source:'manual'});
+      S.transactions.push({id:String(Date.now()),name:name,description:name,amount:finalAmt,date:date,category:cat,type:type,recurring:rec,isRecurring:rec,frequency:freq,endDate:endDate,isIncome:isInc,isTransfer:isTrf,isBill:type==='bill',account:acct||null,label:label||null,source:'manual'});
     }
     _ufEditId=null;
     try{clearGroupsCache();}catch(e){}
@@ -2980,6 +3018,8 @@ function saveGroupEdit(){
 function openGoalModal(editId=null){
   const g=editId?S.goals.find(x=>x.id===editId):null;
   const mb=document.getElementById('modal-box');
+  const hasAutoAlloc=g&&g.autoAllocate;
+  const allocFreq=g&&g.allocateFrequency?g.allocateFrequency:'monthly';
   mb.innerHTML=`<div class="md"><div class="mh"><div class="mt">${g?'Edit':'New'} Goal</div><button class="mc" onclick="closeMo()">✕</button></div>
 <input type="hidden" id="g-id" value="${g?g.id:''}">
 <div class="fg"><label class="fl">Goal Name</label><input class="fin" id="g-name" placeholder="e.g. Emergency Fund, Vacation..." value="${g?g.name:''}"></div>
@@ -2988,14 +3028,27 @@ function openGoalModal(editId=null){
   <div class="fg"><label class="fl">Already Saved ($)</label><input class="fin" id="g-saved" type="number" min="0" step="0.01" placeholder="0.00" value="${g?g.savedAmount:'0'}"></div>
 </div>
 <div class="frow">
-  <div class="fg"><label class="fl">Monthly Allocation ($)</label><input class="fin" id="g-alloc" type="number" min="0" step="0.01" placeholder="200.00" value="${g?g.monthlyAllocation:''}"></div>
   <div class="fg"><label class="fl">Target Date</label><input class="fin" id="g-date" type="date" value="${g&&g.targetDate?g.targetDate:''}"><small style="font-size:10.5px;color:var(--tx3);display:block;margin-top:2px">When to achieve by</small></div>
+  <div class="fg"><label class="fl">Icon</label><select class="fse" id="g-icon">${GOAL_ICS.map(i=>`<option value="${i}" ${g&&g.icon===i?'selected':''}>${i}</option>`).join('')}</select></div>
 </div>
 <div class="frow">
-  <div class="fg"><label class="fl">Icon</label><select class="fse" id="g-icon">${GOAL_ICS.map(i=>`<option value="${i}" ${g&&g.icon===i?'selected':''}>${i}</option>`).join('')}</select></div>
   <div class="fg"><label class="fl">Color</label><select class="fse" id="g-color">${GOAL_COLS.map(c=>`<option value="${c.hex}" ${g&&g.color===c.hex?'selected':''}>${c.name}</option>`).join('')}</select></div>
+  <div class="fg"><label class="fl">Category</label><select class="fse" id="g-cat"><option>Savings</option><option>Emergency Fund</option><option>Home</option><option>Vehicle</option><option>Travel</option><option>Education</option><option>Investment</option><option>Retirement</option><option>Other</option></select></div>
 </div>
-<div class="fg"><label class="fl">Category</label><select class="fse" id="g-cat"><option>Savings</option><option>Emergency Fund</option><option>Home</option><option>Vehicle</option><option>Travel</option><option>Education</option><option>Investment</option><option>Retirement</option><option>Other</option></select></div>
+<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 12px;margin-bottom:10px;display:flex;align-items:center;gap:10px">
+  <input type="checkbox" id="g-auto" ${hasAutoAlloc?'checked':''} style="width:16px;height:16px;accent-color:#d97706;cursor:pointer" onchange="document.getElementById('g-alloc-sec').style.display=this.checked?'block':'none'">
+  <label for="g-auto" style="font-size:13px;font-weight:600;color:#166534;cursor:pointer">Auto-allocate from balance (shows in forecast calendar)</label>
+</div>
+<div id="g-alloc-sec" style="display:${hasAutoAlloc?'block':'none'};margin-bottom:10px">
+  <div class="frow">
+    <div class="fg"><label class="fl">Amount per period ($)</label><input class="fin" id="g-alloc" type="number" min="0" step="0.01" placeholder="200.00" value="${g&&g.monthlyAllocation?g.monthlyAllocation:''}"></div>
+    <div class="fg"><label class="fl">Schedule</label><select class="fse" id="g-freq">
+      <option value="monthly" ${allocFreq==='monthly'?'selected':''}>Monthly</option>
+      <option value="biweekly" ${allocFreq==='biweekly'?'selected':''}>Bi-Weekly</option>
+      <option value="weekly" ${allocFreq==='weekly'?'selected':''}>Weekly</option>
+    </select></div>
+  </div>
+</div>
 <div class="mf"><button class="btn btn-s" onclick="closeMo()">Cancel</button><button class="btn btn-g" onclick="saveGoal()">Save Goal</button></div></div>`;
   if(g){const cs=document.getElementById('g-cat');if(cs)for(let i=0;i<cs.options.length;i++)if(cs.options[i].value===g.category){cs.selectedIndex=i;break}}
   document.getElementById('modal-overlay').classList.add('open');
@@ -3006,14 +3059,31 @@ function saveGoal(){
   const name=document.getElementById('g-name').value.trim();
   const target=parseFloat(document.getElementById('g-target').value);
   const saved=parseFloat(document.getElementById('g-saved').value)||0;
-  const alloc=parseFloat(document.getElementById('g-alloc').value)||0;
+  const autoEl=document.getElementById('g-auto');
+  const autoAlloc=autoEl?autoEl.checked:false;
+  const allocEl=document.getElementById('g-alloc');
+  const alloc=autoAlloc?(parseFloat(allocEl?allocEl.value:0)||0):0;
+  const freqEl=document.getElementById('g-freq');
+  const allocFreq=freqEl?freqEl.value:'monthly';
   const icon=document.getElementById('g-icon').value;
   const color=document.getElementById('g-color').value;
   const cat=document.getElementById('g-cat').value;
   const targetDate=document.getElementById('g-date').value||null;
   if(!name||isNaN(target)||target<=0){var gn=document.getElementById('g-name');if(gn)gn.style.border='1.5px solid #dc2626';var gt=document.getElementById('g-target');if(gt)gt.style.border='1.5px solid #dc2626';return;}
-  const g={id:id||Date.now().toString(),name,targetAmount:target,savedAmount:saved,monthlyAllocation:alloc,icon,color,category:cat,targetDate,completed:saved>=target};
-  if(id){const i=S.goals.findIndex(x=>x.id===id);if(i>=0)S.goals[i]=g;}else S.goals.push(g);
+  const g={id:id||Date.now().toString(),name,targetAmount:target,savedAmount:saved,
+    monthlyAllocation:alloc,autoAllocate:autoAlloc,allocateFrequency:allocFreq,allocateDay:1,
+    icon,color,category:cat,targetDate,completed:saved>=target};
+  if(id){
+    const i=S.goals.findIndex(x=>x.id===id);
+    if(i>=0){
+      // Preserve original createdDate on edit
+      g.createdDate=S.goals[i].createdDate||new Date().toISOString().substring(0,10);
+      S.goals[i]=g;
+    }
+  } else {
+    g.createdDate=new Date().toISOString().substring(0,10);
+    S.goals.push(g);
+  }
   try{save();}catch(e){}
   closeMo();
   rGoals();
