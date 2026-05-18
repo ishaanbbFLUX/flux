@@ -1002,7 +1002,7 @@ let txFilter='all',txAccFilter='all',txCatFilter='all',foreMonth=new Date().getM
 let selDay=null;
 
 function save(){
-  var data={b:S.currentBalance,tx:S.transactions,csv:S.csvTxs,g:S.goals,acc:S.accounts,bud:S.budgets||{},rules:S.learnedRules||{},ameta:S.accountMeta||{},cmaps:S.csvMappings||{}};
+  var data={b:S.currentBalance,tx:S.transactions,csv:S.csvTxs,g:S.goals,acc:S.accounts,bud:S.budgets||{},rules:S.learnedRules||{},ameta:S.accountMeta||{},cmaps:S.csvMappings||{},ai:S._aiSettings||null};
   // Try full save
   try{localStorage.setItem('flux3',JSON.stringify(data));triggerDriveAutoSave();return;}catch(e1){}
   try{localStorage.setItem('flux3',JSON.stringify(Object.assign({},data,{csv:S.csvTxs.slice(-200)})));triggerDriveAutoSave();return;}catch(e2){}
@@ -1021,7 +1021,7 @@ function showStorageWarning(msg){
   document.body.appendChild(el);
   setTimeout(function(){if(el.parentNode)el.remove();},8000);
 }
-function load(){const d=localStorage.getItem('flux3');if(d){const p=JSON.parse(d);S.currentBalance=p.b||0;S.transactions=p.tx||[];S.csvTxs=p.csv||[];S.goals=p.g||[];S.accounts=p.acc||{};S.budgets=p.bud||{};S.learnedRules=p.rules||{};S.accountMeta=p.ameta||{};S.csvMappings=p.cmaps||{};rebuildAccounts();return true}return false}
+function load(){const d=localStorage.getItem('flux3');if(d){const p=JSON.parse(d);S.currentBalance=p.b||0;S.transactions=p.tx||[];S.csvTxs=p.csv||[];S.goals=p.g||[];S.accounts=p.acc||{};S.budgets=p.bud||{};S.learnedRules=p.rules||{};S.accountMeta=p.ameta||{};S.csvMappings=p.cmaps||{};if(p.ai)S._aiSettings=p.ai;rebuildAccounts();return true}return false}
 
 let txYear=new Date().getFullYear(),txMonth=new Date().getMonth();
 let anaYear=new Date().getFullYear(),anaMonth=new Date().getMonth();
@@ -1172,9 +1172,11 @@ function gDriveLoad(){
       S.learnedRules=d.learnedRules||{};
       S.accountMeta=d.accountMeta||{};
       S.csvMappings=d.csvMappings||{};
+      if(d.ai)S._aiSettings=d.ai;
       try{save();}catch(e){}
       rebuildAccounts();
       jumpToMostRecentMonth();
+      loadAISettings();
       sw(S.activeTab);
       updSidebar();
       showStorageWarning('✅ Data loaded from Google Drive! '+(S.csvTxs.length+S.transactions.length)+' transactions, '+S.goals.length+' goals.');
@@ -1194,7 +1196,7 @@ function gDriveSave(showConfirm){
     version:2,saved:new Date().toISOString(),
     currentBalance:S.currentBalance,transactions:S.transactions,csvTxs:S.csvTxs,
     goals:S.goals,accounts:S.accounts,budgets:S.budgets||{},
-    learnedRules:S.learnedRules||{},accountMeta:S.accountMeta||{},csvMappings:S.csvMappings||{}
+    learnedRules:S.learnedRules||{},accountMeta:S.accountMeta||{},csvMappings:S.csvMappings||{},ai:S._aiSettings||null
   });
   var blob=new Blob([data],{type:'application/json'});
   gDriveFindFile().then(function(fileId){
@@ -3071,11 +3073,21 @@ var _askSettingsOpen=false;
 var _aiSettings={provider:'claude',keys:{claude:'',openai:'',gemini:'',groq:''}};
 
 function loadAISettings(){
+  // Try localStorage first
   try{var s=localStorage.getItem('flux_ai');if(s)_aiSettings=Object.assign({provider:'claude',keys:{claude:'',openai:'',gemini:'',groq:''}},JSON.parse(s));}catch(e){}
+  // Then overlay with Drive-synced settings if available (more up to date)
+  if(S._aiSettings&&S._aiSettings.keys){
+    _aiSettings=Object.assign({provider:'claude',keys:{claude:'',openai:'',gemini:'',groq:''}},S._aiSettings);
+    // Also write back to localStorage for this device
+    try{localStorage.setItem('flux_ai',JSON.stringify(_aiSettings));}catch(e){}
+  }
 }
 
 function saveAISettingsStore(){
   try{localStorage.setItem('flux_ai',JSON.stringify(_aiSettings));}catch(e){}
+  // Also persist to main data so Drive sync carries it across devices
+  S._aiSettings=_aiSettings;
+  try{save();}catch(e){}
 }
 
 var PROVIDERS={
