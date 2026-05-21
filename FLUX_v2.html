@@ -888,13 +888,23 @@ function updateUncatCount(){
   if(el)el.textContent=rows.length+' transaction'+(rows.length!==1?'s':'')+' remaining'+(rows.length===0?' — all done! ✅':'');
 }
 
-function isTransfer(t){return t.category==='Transfer'||t.isTransfer===true}
+function isTransfer(t){
+  var desc=(t.description||t.name||'').toUpperCase().trim();
+  // Zelle, Cash App, Venmo are purchases — never transfers
+  if(/ZELLE|CASH\s?APP|CASHAPP|VENMO/.test(desc))return false;
+  // Explicitly flagged as transfer
+  if(t.isTransfer===true||t.type==='transfer'||t.category==='Transfer')return true;
+  // Account-to-account movement keywords (must start with these)
+  return /^(DEPOSIT FROM|WITHDRAWAL FROM|WITHDRAWAL TO|OVERDRAFT TRANSFER|ONLINE TRANSFER|ACCOUNT TRANSFER|INTERNAL TRANSFER|XFER |TRSF )/.test(desc);
+}
 
 function detectTransfers(txs){
   var own=['1066','1335','1413'];
-  // Pass 1: keyword-based — catches inter-account language in descriptions
+  // Pass 1: keyword-based — skip Zelle/CashApp/Venmo which are purchases
   txs.forEach(function(tx){
-    if(/\b(transfer|trsf|xfer)\b|from\s+savings|to\s+savings|from\s+checking|to\s+checking|from\s+personal|to\s+personal|from\s+bill\s*pay|to\s+bill\s*pay|between\s+accounts/i.test(tx.description)){
+    var desc=tx.description||'';
+    if(/ZELLE|CASH\s?APP|CASHAPP|VENMO/i.test(desc))return; // never a transfer
+    if(/\b(transfer|trsf|xfer)\b|from\s+savings|to\s+savings|from\s+checking|to\s+checking|from\s+personal|to\s+personal|from\s+bill\s*pay|to\s+bill\s*pay|between\s+accounts/i.test(desc)){
       tx.category='Transfer';tx.isTransfer=true;tx.isIncome=false;
     }
   });
@@ -1854,81 +1864,112 @@ function txTypeFromTx(tx){
 }
 
 function txRow(tx){
-  const isTrf=isTransfer(tx);
-  const isInc=!isTrf&&(tx.isIncome||tx.type==='income'||(tx.amount>0&&!['Transfer','Cash'].includes(tx.category)));
-  const cat=tx.category||'Other';
-  const acctInfo=tx.account?ACCOUNTS[tx.account]:null;
-  const amtClass=isTrf?'trf':isInc?'inc':'exp';
-  const amtPrefix=isTrf?'↔':isInc?'+':'-';
-  // Group badge — only for CSV transactions that belong to a pattern group
-  var grpBadge='';
-  if(tx.source==='csv'&&!isTrf){
-    var grps=buildGroups();
-    var gKey=normalizeDesc(tx.description);
-    var grp=grps[gKey];
-    if(grp&&grp.ids.length>1){
-      grpBadge=`<button class="grp-btn" onclick="openGroupEdit('${tx.id}')">∷ ${grp.ids.length}× group</button>`;
-    }
+  var simpleType=classifyTxSimple(tx);
+  var typeColor=classifyTxColor(simpleType);
+  var typeLabel=classifyTxLabel(simpleType);
+  var isInc=simpleType==='payment'||simpleType==='credit';
+  var isTrf=simpleType==='transfer';
+  var amtPrefix=isTrf?'↔':isInc?'+':'-';
+  var amtClass=isTrf?'trf':isInc?'inc':'exp';
+  var merchant=tx.name||tx.description||'Transaction';
+  // Shorten merchant name
+  if(merchant.length>40)merchant=merchant.substring(0,38)+'…';
+  var recBadge='';
+  if(tx.isRecurring||tx.recurring){
+    var rl='↻';
+    if(tx.endDate){var end=new Date(tx.endDate+'T12:00:00');var now=new Date();if(now>end)rl='✓ ended';}
+    recBadge='<span style="font-size:9px;color:#7c3aed;background:#f5f3ff;padding:1px 5px;border-radius:4px;font-weight:700;margin-left:4px">'+rl+'</span>';
   }
-  return`<div class="ti">
-<div class="t-ic" style="background:${(CAT_COLORS[cat]||'#94a3b8')}18">${getCatIcon(cat)}</div>
-<div class="t-inf">
-<div class="t-nm">${tx.name||tx.description||'Transaction'}</div>
-<div class="t-mt">
-<span>${fd(tx.date)}</span>
-<span class="t-cb" style="background:${(CAT_COLORS[cat]||'#94a3b8')}18;color:${CAT_COLORS[cat]||'#94a3b8'}">${cat}</span>
-${tx.isRecurring||tx.recurring?(function(){
-  var recLabel='↻ '+(tx.frequency||'recurring');
-  if(tx.endDate){
-    var remaining=0;var cur=new Date(tx.date+'T12:00:00');var end=new Date(tx.endDate+'T23:59:59');var now=new Date();
-    while(cur<=end){if(cur>=now)remaining++;cur=adv(cur,tx.frequency||'monthly');}
-    recLabel+=' · ends '+fd(tx.endDate)+(remaining>0?' ('+remaining+' left)':' ✓ complete');
-  }
-  return '<span class="t-rec">'+recLabel+'</span>';
-})():''}
-${isTrf?'<span style="font-size:9.5px;color:#64748b;background:#f1f5f9;padding:1px 5px;border-radius:3px;font-weight:600">TRANSFER</span>':''}
-${acctInfo?`<span style="font-size:9.5px;color:var(--tx3)">••••${tx.account}</span>`:''}
-${tx.isBill&&!isTrf?'<span class="badge b-bill" style="font-size:9px">BILL</span>':''}
-${labelBadgeHtml(tx,true)}
-${grpBadge}
+  var matchBadge=tx._matchedWithCSV?'<span style="font-size:9px;color:#16a34a;background:#f0fdf4;padding:1px 5px;border-radius:4px;font-weight:700;margin-left:4px">matched</span>':'';
+  return`<div class="ti" style="align-items:center;padding:10px 12px;gap:10px">
+<div style="flex:1;min-width:0">
+  <div style="font-size:13px;font-weight:600;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${merchant}</div>
+  <div style="display:flex;align-items:center;gap:6px;margin-top:3px;flex-wrap:wrap">
+    <span style="font-size:10px;color:var(--tx3)">${fd(tx.date)}</span>
+    <span style="font-size:10px;font-weight:700;color:${typeColor};background:${typeColor}18;padding:1px 6px;border-radius:4px">${typeLabel}</span>
+    ${recBadge}${matchBadge}
+    ${tx.account?`<span style="font-size:9px;color:var(--tx3)">••••${tx.account}</span>`:''}
+  </div>
 </div>
+<div style="text-align:right;flex-shrink:0">
+  <div class="t-am ${amtClass}" style="font-size:14px">${amtPrefix}${fmo(Math.abs(tx.amount))}</div>
+  ${tx.balance!=null?`<div style="font-size:10.5px;color:var(--tx3);font-family:JetBrains Mono,monospace">bal ${fmo(tx.balance)}</div>`:''}
 </div>
-${tx.balance!=null?`<div style="text-align:right"><div class="t-am ${amtClass}">${amtPrefix}${fmo(Math.abs(tx.amount))}</div><div class="t-am-bal">bal ${fmo(tx.balance)}</div></div>`:`<div class="t-am ${amtClass}">${amtPrefix}${fmo(Math.abs(tx.amount))}</div>`}
 <div class="t-acts"><button class="ta-btn ta-e" onclick="openUpdateFinancials('${txTypeFromTx(tx)}','${tx.id}')">✎</button><button class="ta-btn ta-d" onclick="delTx('${tx.id}')">✕</button></div>
 </div>`}
+
+function classifyTxSimple(tx){
+  var desc=(tx.name||tx.description||'').toUpperCase().trim();
+  // Interest
+  if(/INTEREST|FINANCE\s?CHG|APR\s?FEE/.test(desc))return'interest';
+  // Zelle, Cash App, Venmo — always purchase, never transfer
+  if(/ZELLE|CASH\s?APP|CASHAPP|VENMO/.test(desc))return'purchase';
+  // Transfer — account-to-account only
+  if(isTransfer(tx))return'transfer';
+  // Payment — direct deposit / income
+  if(tx.isIncome||tx.type==='income'||/^(DIRECT\s?DEP|DIRECT\s?DEPOSIT|PAYROLL|SALARY|WAGES)/.test(desc))return'payment';
+  // Credit — explicit refund/return/reversal only
+  if(/\bREFUND\b|\bRETURN\b|\bREVERSAL\b|\bREVERSED\b|\bCASHBACK\b|\bCASH BACK\b|\bCREDIT ADJ/.test(desc)&&!tx.isIncome&&tx.type!=='income')return'credit';
+  // Everything else = purchase
+  return'purchase';
+}
+
+function classifyTxLabel(type){
+  var map={purchase:'Purchase',payment:'Payment',credit:'Credit',transfer:'Transfer',interest:'Interest'};
+  return map[type]||'Purchase';
+}
+
+function classifyTxColor(type){
+  var map={purchase:'#ef4444',payment:'#16a34a',credit:'#2563eb',transfer:'#64748b',interest:'#d97706'};
+  return map[type]||'#94a3b8';
+}
 
 function getCatIcon(c){const m={Housing:'🏠','Food & Dining':'🍽️',Transportation:'🚗',Parking:'🅿️',Entertainment:'🎬',Healthcare:'💊',Utilities:'⚡',Shopping:'🛍️',Subscriptions:'📱',Insurance:'🛡️',Education:'📚','Personal Care':'💆',Travel:'✈️',Pets:'🐾',Fitness:'💪',Income:'💰',Groceries:'🛒',Gas:'⛽',Rideshare:'🚕',Cash:'💵',Fees:'🏦',Transfer:'↔️',Debt:'💳','Debt Payment':'💳',Bars:'🍺',Tithing:'🙏',Goals:'🎯',Other:'📌'};return m[c]||'📌'}
 
 function isBillTx(tx){
-  // A "bill" is: explicitly typed as bill, OR recurring non-income non-transfer
+  // A bill MUST be recurring — one-off transactions from other months don't count
   return !isTransfer(tx)&&!tx.isIncome&&tx.type!=='income'&&
     (tx.isBill||tx.type==='bill'||(tx.isRecurring||tx.recurring));
 }
 
 function getUpcomingBills(days){
+  // Strictly days ahead from today — recurring transactions only, deduplicated by merchant
   const s=today();const e=new Date(s);e.setDate(e.getDate()+days);e.setHours(23,59,59,999);
-  const res=[];
-  // Manual bills and recurring transactions
-  S.transactions.filter(isBillTx).forEach(tx=>{getOcc(tx,s,e).forEach(d=>res.push({...tx,dueDate:d}))});
-  // CSV recurring bills
-  S.csvTxs.filter(isBillTx).forEach(tx=>{
-    var r=Object.assign({},tx,{recurring:true,isRecurring:true,frequency:tx.frequency||'monthly'});
-    getOcc(r,s,e).forEach(d=>res.push({...r,dueDate:d}));
+  const res=[];const seen=new Set();
+  // Manual recurring bills
+  S.transactions.filter(isBillTx).forEach(function(tx){
+    getOcc(tx,s,e).forEach(function(d){
+      var k=normalizeDesc(tx.name||tx.description||'')+'_'+d.toISOString().substring(0,10);
+      if(!seen.has(k)){seen.add(k);res.push(Object.assign({},tx,{dueDate:d}));}
+    });
   });
-  return res.sort((a,b)=>a.dueDate-b.dueDate);
+  // CSV recurring bills — use csvRecurringRules() which deduplicates by merchant
+  // so "Withdrawal from Rosslyn" appearing 5x in CSV only projects once
+  csvRecurringRules().filter(isBillTx).forEach(function(tx){
+    getOcc(tx,s,e).forEach(function(d){
+      var k=normalizeDesc(tx.name||tx.description||'')+'_'+d.toISOString().substring(0,10);
+      if(!seen.has(k)){seen.add(k);res.push(Object.assign({},tx,{dueDate:d}));}
+    });
+  });
+  return res.sort(function(a,b){return a.dueDate-b.dueDate;});
 }
 
 function getRemainingMonthBills(){
   const now=today();const e=new Date(now.getFullYear(),now.getMonth()+1,0);e.setHours(23,59,59,999);
-  const res=[];
-  // Manual bills and recurring transactions
-  S.transactions.filter(isBillTx).forEach(tx=>{getOcc(tx,now,e).forEach(d=>res.push({...tx,dueDate:d}))});
-  // CSV recurring bills
-  S.csvTxs.filter(isBillTx).forEach(tx=>{
-    var r=Object.assign({},tx,{recurring:true,isRecurring:true,frequency:tx.frequency||'monthly'});
-    getOcc(r,now,e).forEach(d=>res.push({...r,dueDate:d}));
+  const res=[];const seen=new Set();
+  S.transactions.filter(isBillTx).forEach(function(tx){
+    getOcc(tx,now,e).forEach(function(d){
+      var k=normalizeDesc(tx.name||tx.description||'')+'_'+d.toISOString().substring(0,10);
+      if(!seen.has(k)){seen.add(k);res.push(Object.assign({},tx,{dueDate:d}));}
+    });
   });
-  return res.sort((a,b)=>a.dueDate-b.dueDate);
+  csvRecurringRules().filter(isBillTx).forEach(function(tx){
+    getOcc(tx,now,e).forEach(function(d){
+      var k=normalizeDesc(tx.name||tx.description||'')+'_'+d.toISOString().substring(0,10);
+      if(!seen.has(k)){seen.add(k);res.push(Object.assign({},r,{dueDate:d}));}
+    });
+  });
+  return res.sort(function(a,b){return a.dueDate-b.dueDate;});
 }
 
 const NEEDS_CATS=['Housing','Utilities','Groceries','Insurance','Healthcare','Transportation','Gas','Parking','Tithing','Debt','Debt Payment'];
@@ -2100,7 +2141,7 @@ function rTx(){
   +'<div class="acc-tab"><button class="acc-t '+(txAccFilter==='all'?'on':'')+'" onclick="txAccFilter=\'all\';rTx()">All Accounts</button>'
   +Object.entries(getAllAccounts()).map(function(e){var num=e[0],info=e[1];return'<button class="acc-t '+(txAccFilter===num?'on':'')+'" onclick="txAccFilter=\''+num+'\';rTx()" style="'+(txAccFilter===num?'border-color:'+info.color+';color:'+info.color+';background:'+info.color+'12':'')+'">'+''+info.short+' ••••'+num+'</button>';}).join('')
   +'<button class="acc-t '+(txAccFilter==='manual'?'on':'')+'" onclick="txAccFilter=\'manual\';rTx()">Manual</button></div>'
-  +'<div class="tf"><button class="fb '+(txFilter==='all'?'on':'')+'" onclick="txFilter=\'all\';rTx()">All</button><button class="fb '+(txFilter==='income'?'on':'')+'" onclick="txFilter=\'income\';rTx()">Income</button><button class="fb '+(txFilter==='bill'?'on':'')+'" onclick="txFilter=\'bill\';rTx()">Bills</button><button class="fb '+(txFilter==='purchase'?'on':'')+'" onclick="txFilter=\'purchase\';rTx()">Purchases</button><button class="fb '+(txFilter==='debit'?'on':'')+'" onclick="txFilter=\'debit\';rTx()">Debits</button><button class="fb '+(txFilter==='credit'?'on':'')+'" onclick="txFilter=\'credit\';rTx()">Credits</button>'
+  +'<div class="tf"><button class="fb '+(txFilter==='all'?'on':'')+'" onclick="txFilter=\'all\';rTx()">All</button><button class="fb '+(txFilter==='purchase'?'on':'')+'" onclick="txFilter=\'purchase\';rTx()">Purchase</button><button class="fb '+(txFilter==='payment'?'on':'')+'" onclick="txFilter=\'payment\';rTx()">Payment</button><button class="fb '+(txFilter==='credit'?'on':'')+'" onclick="txFilter=\'credit\';rTx()">Credit</button><button class="fb '+(txFilter==='transfer'?'on':'')+'" onclick="txFilter=\'transfer\';rTx()">Transfer</button><button class="fb '+(txFilter==='interest'?'on':'')+'" onclick="txFilter=\'interest\';rTx()">Interest</button>'
   +'<span style="width:1px;height:18px;background:var(--bd);margin:0 2px"></span>'
   +allCats.slice(0,10).map(function(c){return'<button class="fb '+(txCatFilter===c?'on':'')+'" onclick="txCatFilter=\''+c+'\';rTx()">'+c+'</button>';}).join('')
   +(txCatFilter!=='all'?'<button class="fb on" style="color:var(--red);border-color:var(--red)" onclick="txCatFilter=\'all\';rTx()">✕ Clear</button>':'')
@@ -2656,9 +2697,9 @@ function openCSVImport(){
   +'<div id="csv-step-1">'
   +'<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:var(--rs);padding:10px 14px;margin-bottom:14px;font-size:12px;color:#1e40af">Works with any bank export — you\'ll map the columns in the next step.</div>'
   +'<label for="csv-file-input" style="display:block;border:2px dashed #cbd5e1;border-radius:var(--r);padding:36px;text-align:center;cursor:pointer;background:#f8fafc;transition:all .2s" id="csv-drop" onmouseover="this.style.borderColor=\'#2563eb\';this.style.background=\'#eff6ff\'" onmouseout="this.style.borderColor=\'#cbd5e1\';this.style.background=\'#f8fafc\'">'
-  +'<div style="font-size:32px;margin-bottom:8px">📄</div><div style="font-size:14px;font-weight:700;color:#0f172a;margin-bottom:4px">Click to select your CSV file</div>'
-  +'<div style="font-size:12px;color:#94a3b8">Any bank export: Chase, Bank of America, Wells Fargo, etc.</div>'
-  +'<input type="file" id="csv-file-input" accept=".csv,.txt,.CSV" style="display:none" onchange="handleCSVFile(this)"></label>'
+  +'<div style="font-size:32px;margin-bottom:8px">📄</div><div style="font-size:14px;font-weight:700;color:#0f172a;margin-bottom:4px">Click to select your bank file</div>'
+  +'<div style="font-size:12px;color:#94a3b8">Supports CSV and PDF bank statements</div>'
+  +'<input type="file" id="csv-file-input" accept=".csv,.txt,.CSV,.pdf,.PDF" style="display:none" onchange="handleCSVFile(this)"></label>'
   +'<div id="csv-msg" style="margin-top:12px"></div></div>'
   +'<div id="csv-step-2" style="display:none"></div>'
   +'</div>';
@@ -2666,12 +2707,98 @@ function openCSVImport(){
   if(dz){
     dz.addEventListener('dragover',function(e){e.preventDefault();dz.style.borderColor='#2563eb';dz.style.background='#eff6ff'});
     dz.addEventListener('dragleave',function(){dz.style.borderColor='#cbd5e1';dz.style.background='#f8fafc'});
-    dz.addEventListener('drop',function(e){e.preventDefault();dz.style.borderColor='#cbd5e1';dz.style.background='#f8fafc';var f=e.dataTransfer.files[0];if(f)readCSVFile(f);});
+    dz.addEventListener('drop',function(e){e.preventDefault();dz.style.borderColor='#cbd5e1';dz.style.background='#f8fafc';var f=e.dataTransfer.files[0];if(f)readBankFile(f);});
   }
   document.getElementById('modal-overlay').classList.add('open');
 }
 
-function handleCSVFile(input){if(input&&input.files&&input.files[0])readCSVFile(input.files[0]);}
+function handleCSVFile(input){if(input&&input.files&&input.files[0])readBankFile(input.files[0]);}
+
+function readBankFile(file){
+  if(file.name.toLowerCase().endsWith('.pdf')){readPDFFile(file);}
+  else{readCSVFile(file);}
+}
+
+function readPDFFile(file){
+  var msg=document.getElementById('csv-msg');
+  if(msg)msg.innerHTML='<div style="padding:10px;text-align:center;color:#475569;font-size:13px">⏳ Reading PDF...</div>';
+  // Load PDF.js dynamically
+  if(typeof pdfjsLib==='undefined'){
+    var script=document.createElement('script');
+    script.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    script.onload=function(){
+      pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      parsePDF(file,msg);
+    };
+    document.head.appendChild(script);
+  } else {
+    parsePDF(file,msg);
+  }
+}
+
+function parsePDF(file,msg){
+  var reader=new FileReader();
+  reader.onload=function(e){
+    var typedArray=new Uint8Array(e.target.result);
+    pdfjsLib.getDocument(typedArray).promise.then(function(pdf){
+      var textPromises=[];
+      for(var i=1;i<=pdf.numPages;i++){
+        textPromises.push(pdf.getPage(i).then(function(page){
+          return page.getTextContent().then(function(tc){
+            return tc.items.map(function(item){return item.str;}).join(' ');
+          });
+        }));
+      }
+      Promise.all(textPromises).then(function(pages){
+        var fullText=pages.join('\n');
+        // Try to find transaction lines: date + description + amount pattern
+        var lines=fullText.split(/\n|(?=\d{1,2}\/\d{1,2}\/\d{2,4})/);
+        var txPattern=/^(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})\s*(-?\$?[\d,]+\.\d{2})?/;
+        var parsed=[];
+        lines.forEach(function(line){
+          var m=line.match(txPattern);
+          if(m){
+            var rawAmt=parseFloat(m[3].replace(/[$,]/g,''));
+            var rawBal=m[4]?parseFloat(m[4].replace(/[$,]/g,'')):null;
+            if(!isNaN(rawAmt)){
+              parsed.push({date:m[1],description:m[2].trim(),amount:rawAmt,balance:rawBal});
+            }
+          }
+        });
+        if(parsed.length>=2){
+          if(msg)msg.innerHTML='<div style="color:#16a34a;font-size:12px;padding:8px">✅ Found '+parsed.length+' transactions in PDF. Review below.</div>';
+          // Convert to CSV format and process
+          var csvLines=['Date,Description,Amount,Balance'];
+          parsed.forEach(function(r){csvLines.push(r.date+',"'+r.description+'",'+r.amount+(r.balance!=null?','+r.balance:''));});
+          var csvText=csvLines.join('\n');
+          var lines2=csvText.trim().split(/\r?\n/);
+          var firstRow=parseCSVLine(lines2[0]);
+          var dataRows=lines2.slice(1).map(parseCSVLine).filter(function(r){return r.length>=2;});
+          window._csvRawRows=dataRows;
+          window._csvHeaders=firstRow;
+          showCSVMapping(firstRow,dataRows.slice(0,5));
+        } else {
+          if(msg)msg.innerHTML='<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px;font-size:12.5px;color:#dc2626">⚠️ Could not automatically parse this PDF.<br><br>Most banks offer a <strong>Download CSV/Excel</strong> option which works much better. Try:<br>1. Log in to your bank<br>2. Find transaction history<br>3. Click Export/Download → CSV format<br><br>Alternatively, you can paste transaction text below:<br><textarea id="pdf-paste" style="width:100%;height:120px;margin-top:8px;padding:8px;border:1px solid #e2e8f0;border-radius:6px;font-size:11px;box-sizing:border-box" placeholder="Paste transaction data here..."></textarea><button onclick="tryParsePastedText()" style="margin-top:6px;padding:7px 14px;background:#2563eb;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif">Parse Pasted Text</button></div>';
+        }
+      });
+    }).catch(function(err){
+      if(msg)msg.innerHTML='<div style="color:#dc2626;font-size:12px">⚠️ Could not read PDF: '+err.message+'. Try exporting as CSV from your bank instead.</div>';
+    });
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function tryParsePastedText(){
+  var ta=document.getElementById('pdf-paste');
+  if(!ta||!ta.value.trim())return;
+  var lines=ta.value.trim().split(/\r?\n/).filter(function(l){return l.trim();});
+  var firstRow=parseCSVLine(lines[0]);
+  var dataRows=lines.slice(1).map(parseCSVLine).filter(function(r){return r.length>=2;});
+  if(!dataRows.length){dataRows=[firstRow];firstRow=['Description','Amount'];}
+  window._csvRawRows=dataRows;
+  window._csvHeaders=firstRow;
+  showCSVMapping(firstRow,dataRows.slice(0,5));
+}
 
 function readCSVFile(file){
   var msg=document.getElementById('csv-msg');
@@ -2872,10 +2999,24 @@ function appendCSV(){
   var newAccts=detectAndRegisterNewAccounts(window._pendingCSV);
   var existingIds=new Set(S.csvTxs.map(function(t){return t.id;}));
   var existingSigs=new Set(S.csvTxs.map(function(t){return t.date+'|'+(t.description||'').substring(0,20)+'|'+t.amount;}));
+  // Also build manual transaction signatures to avoid CSV vs manual duplication
+  var manualSigs=new Set(S.transactions.map(function(t){
+    return t.date+'|'+normalizeDesc(t.name||t.description||'').substring(0,15)+'|'+Math.round(Math.abs(t.amount)*100);
+  }));
   var toAdd=window._pendingCSV.filter(function(t){
     if(existingIds.has(t.id))return false;
     var sig=t.date+'|'+(t.description||'').substring(0,20)+'|'+t.amount;
     if(existingSigs.has(sig))return false;
+    // Check against manual transactions
+    var manSig=t.date+'|'+normalizeDesc(t.description||'').substring(0,15)+'|'+Math.round(Math.abs(t.amount)*100);
+    if(manualSigs.has(manSig)){
+      // Mark matching manual transaction so it shows a "matched" badge
+      var mi=S.transactions.findIndex(function(mt){
+        return mt.date===t.date&&Math.round(Math.abs(mt.amount)*100)===Math.round(Math.abs(t.amount)*100);
+      });
+      if(mi>=0)S.transactions[mi]._matchedWithCSV=true;
+      return false; // skip - manual entry already covers this
+    }
     return true;
   });
   var dupeCount=window._pendingCSV.length-toAdd.length;
