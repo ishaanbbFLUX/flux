@@ -1170,15 +1170,19 @@ function updGoogleUI(){
     el.innerHTML='<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#f0fdf4;border-radius:8px;border:1px solid #bbf7d0">'
     +(gAuth.user.picture?'<img src="'+gAuth.user.picture+'" style="width:24px;height:24px;border-radius:50%">':'<div style="width:24px;height:24px;border-radius:50%;background:#16a34a;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700">✓</div>')
     +'<div style="flex:1;min-width:0"><div style="font-size:11.5px;font-weight:700;color:#166534;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(gAuth.user.name)+'</div>'
-    +'<div style="font-size:10px;color:#16a34a">Connected to Google Drive</div></div>'
+    +'<div style="font-size:10px;color:#16a34a">Connected to Google</div></div>'
     +'<button onclick="gDriveSave(true)" title="Save to Drive" style="background:none;border:none;cursor:pointer;font-size:14px;padding:2px">☁️</button>'
     +'<button onclick="googleSignOut()" title="Sign out" style="background:none;border:none;cursor:pointer;font-size:11px;color:#dc2626;padding:2px">✕</button>'
     +'</div>';
+    // Immediately refresh GCal panel now that we have a token
+    setTimeout(function(){renderGcalSettings();},100);
   } else {
     el.innerHTML='<button onclick="googleSignIn()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;padding:9px 14px;border:1.5px solid #e2e8f0;border-radius:8px;background:#fff;font-size:12.5px;font-weight:600;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif;color:#0f172a">'
     +'<svg width="16" height="16" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.35-8.16 2.35-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>'
     +'Sign in with Google</button>';
   }
+  // Always re-render GCal panel after auth state changes
+  setTimeout(function(){renderGcalSettings();},50);
 }
 
 // Find or create the flux-data.json file in Drive
@@ -1683,6 +1687,7 @@ function updSidebarGcal(){
 }
 
 function rDash(){
+  const y=dashYear,m=dashMonth;
   const mLabel=new Date(y,m,1).toLocaleDateString('en-US',{month:'long',year:'numeric'});
   const inc=monthInc(y,m);const exp=monthExp(y,m);const net=inc-exp;
   const lm=m===0?11:m-1;const ly=m===0?y-1:y;
@@ -3963,10 +3968,11 @@ save();document.getElementById('setup').style.display='none';document.getElement
 // GOOGLE CALENDAR SYNC
 // ══════════════════════════════════════════════════════════════
 
-var _gcalSyncing = false;
-var GCAL_TAG = 'flux_sync_v1'; // identifies all FLUX-created events
+var _gcalSyncing=false;
+var _gcalToken=null; // separate calendar-scoped token
+var GCAL_TAG='flux_sync_v1';
+var GCAL_SCOPE='https://www.googleapis.com/auth/calendar';
 
-// Color IDs: 11=red(Tomato) 10=green(Sage) 9=blueberry 3=grape 6=tangerine
 function gcalColorForType(type){
   if(type==='bill')return'11';
   if(type==='income')return'10';
@@ -3974,66 +3980,79 @@ function gcalColorForType(type){
   return'6';
 }
 
-// Build projected events for next N days
+// Request a fresh token specifically for Calendar scope
+function gcalRequestToken(){
+  return new Promise(function(resolve,reject){
+    if(typeof google==='undefined'){reject(new Error('Google not loaded'));return;}
+    try{
+      var client=google.accounts.oauth2.initTokenClient({
+        client_id:GOOG_CLIENT_ID,
+        scope:GCAL_SCOPE,
+        callback:function(r){
+          if(r.error){reject(new Error(r.error_description||r.error));return;}
+          _gcalToken=r.access_token;
+          resolve(r.access_token);
+        }
+      });
+      client.requestAccessToken({prompt:''});
+    }catch(e){reject(e);}
+  });
+}
+
+async function gcalFetch(url,opts){
+  if(!_gcalToken){
+    try{await gcalRequestToken();}
+    catch(e){throw new Error('Authorization failed — please allow Calendar access when prompted');}
+  }
+  opts=opts||{};
+  opts.headers=Object.assign({Authorization:'Bearer '+_gcalToken},opts.headers||{});
+  var resp=await fetch(url,opts);
+  if(resp.status===401){
+    // Token expired — refresh and retry once
+    try{await gcalRequestToken();}catch(e){throw new Error('Re-authorization failed');}
+    opts.headers['Authorization']='Bearer '+_gcalToken;
+    resp=await fetch(url,opts);
+  }
+  if(!resp.ok){
+    var errBody='';
+    try{var j=await resp.json();errBody=j.error&&j.error.message?j.error.message:JSON.stringify(j);}catch(e){errBody=resp.statusText;}
+    if(resp.status===403)throw new Error('Permission denied (403) — make sure Google Calendar API is enabled at console.cloud.google.com → APIs → Google Calendar API');
+    throw new Error('API error '+resp.status+': '+errBody);
+  }
+  return resp;
+}
+
 function gcalBuildEvents(days){
   var events=[];
   var s=today();
   var e=new Date(s.getFullYear(),s.getMonth(),s.getDate()+days,23,59,59,999);
 
-  // Recurring bills from manual transactions
   S.transactions.filter(isBillTx).forEach(function(tx){
     getOcc(tx,s,e).forEach(function(d){
-      var dateStr=d.toISOString().substring(0,10);
-      events.push({
-        fluxId:'bill_'+tx.id+'_'+dateStr,
-        summary:'🔄 '+(tx.name||tx.description||'Bill')+' · -'+fmo(Math.abs(tx.amount)),
-        date:dateStr,
-        type:'bill',
-        colorId:gcalColorForType('bill')
-      });
+      var ds=d.toISOString().substring(0,10);
+      events.push({fluxId:'bill_'+tx.id+'_'+ds,summary:'🔄 '+(tx.name||tx.description||'Bill')+' · -'+fmo(Math.abs(tx.amount)),date:ds,type:'bill'});
     });
   });
 
-  // Recurring bills from CSV patterns
   csvRecurringRules().filter(isBillTx).forEach(function(tx){
     getOcc(tx,s,e).forEach(function(d){
-      var dateStr=d.toISOString().substring(0,10);
-      events.push({
-        fluxId:'csvbill_'+normalizeDesc(tx.description||tx.name||'')+'_'+dateStr,
-        summary:'🔄 '+(tx.name||tx.description||'Bill')+' · -'+fmo(Math.abs(tx.amount)),
-        date:dateStr,
-        type:'bill',
-        colorId:gcalColorForType('bill')
-      });
+      var ds=d.toISOString().substring(0,10);
+      events.push({fluxId:'csvbill_'+normalizeDesc(tx.description||tx.name||'')+'_'+ds,summary:'🔄 '+(tx.name||tx.description||'Bill')+' · -'+fmo(Math.abs(tx.amount)),date:ds,type:'bill'});
     });
   });
 
-  // Income transactions (recurring)
   S.transactions.filter(function(tx){return(tx.isIncome||tx.type==='income')&&(tx.isRecurring||tx.recurring);}).forEach(function(tx){
     getOcc(tx,s,e).forEach(function(d){
-      var dateStr=d.toISOString().substring(0,10);
-      events.push({
-        fluxId:'income_'+tx.id+'_'+dateStr,
-        summary:'💰 '+(tx.name||tx.description||'Income')+' · +'+fmo(Math.abs(tx.amount)),
-        date:dateStr,
-        type:'income',
-        colorId:gcalColorForType('income')
-      });
+      var ds=d.toISOString().substring(0,10);
+      events.push({fluxId:'income_'+tx.id+'_'+ds,summary:'💰 '+(tx.name||tx.description||'Income')+' · +'+fmo(Math.abs(tx.amount)),date:ds,type:'income'});
     });
   });
 
-  // Goal allocations
-  S.goals.filter(function(g){return g.autoAllocate&&g.allocateFrequency&&!g.completed;}).forEach(function(g){
-    var gTx={date:g.createdDate||new Date().toISOString().substring(0,10),isRecurring:true,recurring:true,frequency:g.allocateFrequency,endDate:g.targetDate,amount:-(g.monthlyAllocation||0),name:g.name||'Goal'};
+  S.goals.filter(function(g){return g.autoAllocate&&!g.completed;}).forEach(function(g){
+    var gTx={date:g.createdDate||new Date().toISOString().substring(0,10),isRecurring:true,recurring:true,frequency:g.allocateFrequency||'monthly',endDate:g.targetDate,amount:-(g.monthlyAllocation||0)};
     getOcc(gTx,s,e).forEach(function(d){
-      var dateStr=d.toISOString().substring(0,10);
-      events.push({
-        fluxId:'goal_'+g.id+'_'+dateStr,
-        summary:'🎯 '+(g.name||'Goal')+' · -'+fmo(Math.abs(gTx.amount)),
-        date:dateStr,
-        type:'goal',
-        colorId:gcalColorForType('goal')
-      });
+      var ds=d.toISOString().substring(0,10);
+      events.push({fluxId:'goal_'+g.id+'_'+ds,summary:'🎯 '+(g.name||'Goal')+' · -'+fmo(Math.abs(gTx.amount)),date:ds,type:'goal'});
     });
   });
 
@@ -4042,120 +4061,102 @@ function gcalBuildEvents(days){
 
 async function gcalSyncAll(silent){
   if(_gcalSyncing)return;
-  if(!gAuth.token){if(!silent)showGcalStatus('⚠️ Not signed in to Google','err');return;}
   var gs=S._gcalSettings;
-  if(!gs.enabled){if(!silent)showGcalStatus('ℹ️ Sync is disabled','info');return;}
+  if(!gs||!gs.enabled){if(!silent)showGcalStatus('ℹ️ Sync is off','info');return;}
   if(!gs.calendarId){if(!silent)showGcalStatus('⚠️ No calendar selected','err');return;}
-
   _gcalSyncing=true;
-  showGcalStatus('⏳ Syncing…','info');
-
+  if(!silent)showGcalStatus('⏳ Syncing…','info');
   try{
     var days=gs.syncDays||90;
     var calId=encodeURIComponent(gs.calendarId);
-
-    // Fetch existing FLUX events
-    var minTime=new Date().toISOString();
-    var maxTime=new Date(Date.now()+days*86400000).toISOString();
-    var listUrl='https://www.googleapis.com/calendar/v3/calendars/'+calId+'/events?privateExtendedProperty=fluxTag%3D'+GCAL_TAG+'&timeMin='+encodeURIComponent(minTime)+'&timeMax='+encodeURIComponent(maxTime)+'&singleEvents=true&maxResults=500';
-    var listResp=await fetch(listUrl,{headers:{Authorization:'Bearer '+gAuth.token}});
-    var listData=await listResp.json();
+    var now=new Date().toISOString();
+    var maxT=new Date(Date.now()+days*86400000).toISOString();
+    var listUrl='https://www.googleapis.com/calendar/v3/calendars/'+calId+'/events?privateExtendedProperty=fluxTag%3D'+GCAL_TAG+'&timeMin='+encodeURIComponent(now)+'&timeMax='+encodeURIComponent(maxT)+'&singleEvents=true&maxResults=500';
+    var listData=await(await gcalFetch(listUrl)).json();
     var existing={};
-    if(listData.items){listData.items.forEach(function(ev){
+    (listData.items||[]).forEach(function(ev){
       var fid=ev.extendedProperties&&ev.extendedProperties.private&&ev.extendedProperties.private.fluxId;
       if(fid)existing[fid]=ev;
-    });}
-
-    // Build desired events
+    });
     var desired=gcalBuildEvents(days);
     var desiredIds=new Set(desired.map(function(e){return e.fluxId;}));
-
-    // Delete events no longer needed
-    var deletePromises=[];
-    Object.keys(existing).forEach(function(fid){
-      if(!desiredIds.has(fid)){
-        deletePromises.push(fetch('https://www.googleapis.com/calendar/v3/calendars/'+calId+'/events/'+existing[fid].id,{method:'DELETE',headers:{Authorization:'Bearer '+gAuth.token}}));
-      }
-    });
-    await Promise.all(deletePromises);
-
-    // Create or update events
-    var upsertPromises=[];
-    desired.forEach(function(ev){
-      var body={
-        summary:ev.summary,
-        start:{date:ev.date},
-        end:{date:ev.date},
-        colorId:ev.colorId,
-        extendedProperties:{private:{fluxTag:GCAL_TAG,fluxId:ev.fluxId,fluxType:ev.type}}
-      };
+    // Delete stale
+    await Promise.all(Object.keys(existing).filter(function(fid){return!desiredIds.has(fid);}).map(function(fid){
+      return gcalFetch('https://www.googleapis.com/calendar/v3/calendars/'+calId+'/events/'+existing[fid].id,{method:'DELETE'});
+    }));
+    // Create/update
+    await Promise.all(desired.map(function(ev){
+      var body={summary:ev.summary,start:{date:ev.date},end:{date:ev.date},colorId:gcalColorForType(ev.type),extendedProperties:{private:{fluxTag:GCAL_TAG,fluxId:ev.fluxId,fluxType:ev.type}}};
       if(existing[ev.fluxId]){
-        // Update if summary changed
-        if(existing[ev.fluxId].summary!==ev.summary){
-          upsertPromises.push(fetch('https://www.googleapis.com/calendar/v3/calendars/'+calId+'/events/'+existing[ev.fluxId].id,{method:'PUT',headers:{'Authorization':'Bearer '+gAuth.token,'Content-Type':'application/json'},body:JSON.stringify(body)}));
-        }
-      } else {
-        upsertPromises.push(fetch('https://www.googleapis.com/calendar/v3/calendars/'+calId+'/events',{method:'POST',headers:{'Authorization':'Bearer '+gAuth.token,'Content-Type':'application/json'},body:JSON.stringify(body)}));
+        if(existing[ev.fluxId].summary===ev.summary)return Promise.resolve();
+        return gcalFetch('https://www.googleapis.com/calendar/v3/calendars/'+calId+'/events/'+existing[ev.fluxId].id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       }
-    });
-    await Promise.all(upsertPromises);
-
+      return gcalFetch('https://www.googleapis.com/calendar/v3/calendars/'+calId+'/events',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    }));
     S._gcalSettings.lastSync=new Date().toISOString();
-    try{save();}catch(e){}
-    showGcalStatus('✅ Synced '+desired.length+' events · '+new Date().toLocaleTimeString(),'ok');
+    try{save();}catch(ex){}
+    showGcalStatus('✅ '+desired.length+' events synced · '+new Date().toLocaleTimeString(),'ok');
+    renderGcalSettings();
   }catch(err){
-    showGcalStatus('❌ Sync failed: '+err.message,'err');
+    showGcalStatus('❌ '+err.message,'err');
     console.error('GCal sync error:',err);
   }
   _gcalSyncing=false;
 }
 
 async function gcalRemoveAll(){
-  if(!gAuth.token||!S._gcalSettings.calendarId)return;
-  var calId=encodeURIComponent(S._gcalSettings.calendarId);
+  if(!S._gcalSettings.calendarId)return;
   showGcalStatus('⏳ Removing FLUX events…','info');
   try{
-    var listUrl='https://www.googleapis.com/calendar/v3/calendars/'+calId+'/events?privateExtendedProperty=fluxTag%3D'+GCAL_TAG+'&singleEvents=true&maxResults=500';
-    var listData=await(await fetch(listUrl,{headers:{Authorization:'Bearer '+gAuth.token}})).json();
-    if(listData.items&&listData.items.length){
-      await Promise.all(listData.items.map(function(ev){return fetch('https://www.googleapis.com/calendar/v3/calendars/'+calId+'/events/'+ev.id,{method:'DELETE',headers:{Authorization:'Bearer '+gAuth.token}});}));
-    }
-    showGcalStatus('✅ All FLUX events removed','ok');
-  }catch(e){showGcalStatus('❌ Remove failed: '+e.message,'err');}
+    var calId=encodeURIComponent(S._gcalSettings.calendarId);
+    var listData=await(await gcalFetch('https://www.googleapis.com/calendar/v3/calendars/'+calId+'/events?privateExtendedProperty=fluxTag%3D'+GCAL_TAG+'&singleEvents=true&maxResults=500')).json();
+    await Promise.all((listData.items||[]).map(function(ev){
+      return gcalFetch('https://www.googleapis.com/calendar/v3/calendars/'+calId+'/events/'+ev.id,{method:'DELETE'});
+    }));
+    showGcalStatus('✅ FLUX events removed','ok');
+  }catch(e){showGcalStatus('❌ '+e.message,'err');}
 }
 
 async function gcalCreateCalendar(){
-  if(!gAuth.token)return null;
-  try{
-    var resp=await fetch('https://www.googleapis.com/calendar/v3/calendars',{method:'POST',headers:{'Authorization':'Bearer '+gAuth.token,'Content-Type':'application/json'},body:JSON.stringify({summary:'FLUX Finance',description:'Auto-synced bills, income, and goal allocations from FLUX',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone})});
-    var data=await resp.json();
-    return data.id||null;
-  }catch(e){return null;}
+  var resp=await gcalFetch('https://www.googleapis.com/calendar/v3/calendars',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({summary:'FLUX Finance',description:'Auto-synced bills, income and goals from FLUX',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone})});
+  var data=await resp.json();
+  return data.id||null;
 }
 
-async function gcalChooseCalendar(typeArg){var type=typeArg===0?'new':typeArg===1?'primary':typeArg;
+async function gcalChooseCalendar(typeArg){
+  var type=typeArg===0?'new':typeArg===1?'primary':typeArg;
   var gs=S._gcalSettings;
-  if(type==='new'){
-    showGcalStatus('⏳ Creating FLUX Finance calendar…','info');
-    var newId=await gcalCreateCalendar();
-    if(!newId){showGcalStatus('❌ Could not create calendar','err');return;}
-    gs.calendarId=newId;gs.calendarType='new';
-    showGcalStatus('✅ Created FLUX Finance calendar','ok');
-  } else {
-    gs.calendarId='primary';gs.calendarType='primary';
-    showGcalStatus('✅ Using primary calendar','ok');
+  showGcalStatus('⏳ Authorizing Google Calendar…','info');
+  try{
+    await gcalRequestToken();
+  }catch(e){
+    showGcalStatus('❌ Authorization cancelled — please allow Calendar access','err');
+    return;
   }
-  gs.enabled=true;
-  try{save();}catch(e){}
-  renderGcalSettings();
-  setTimeout(function(){gcalSyncAll(false);},500);
+  try{
+    if(type==='new'){
+      showGcalStatus('⏳ Creating FLUX Finance calendar…','info');
+      var newId=await gcalCreateCalendar();
+      gs.calendarId=newId;gs.calendarType='new';
+      showGcalStatus('✅ FLUX Finance calendar created','ok');
+    } else {
+      gs.calendarId='primary';gs.calendarType='primary';
+      showGcalStatus('✅ Using primary calendar','ok');
+    }
+    gs.enabled=true;
+    try{save();}catch(ex){}
+    renderGcalSettings();
+    setTimeout(function(){gcalSyncAll(false);},600);
+  }catch(e){
+    showGcalStatus('❌ '+e.message,'err');
+  }
 }
 
 function showGcalStatus(msg,type){
   var el=document.getElementById('gcal-status');
   if(!el)return;
-  var colors={ok:'#16a34a',err:'#dc2626',info:'#2563eb'};
-  el.innerHTML='<span style="color:'+(colors[type]||'#475569')+'">'+msg+'</span>';
+  var c={ok:'#16a34a',err:'#dc2626',info:'#2563eb'};
+  el.innerHTML='<span style="color:'+(c[type]||'#64748b')+'">'+msg+'</span>';
 }
 
 function renderGcalSettings(){
@@ -4164,34 +4165,32 @@ function renderGcalSettings(){
   var gs=S._gcalSettings||{};
   var isConnected=!!(gAuth&&gAuth.token);
   if(!isConnected){
-    el.innerHTML='<div style="font-size:11.5px;color:var(--tx3)">Sign in to Google to enable.</div>';
+    el.innerHTML='<button onclick="googleSignIn();setTimeout(renderGcalSettings,2000)" style="display:block;width:100%;padding:8px 10px;border:1.5px solid #e2e8f0;border-radius:8px;background:#f8fafc;color:#475569;font-size:11.5px;font-weight:600;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif;text-align:left;box-sizing:border-box">🔗 Connect Google to enable<br><span style="font-weight:400;font-size:10.5px;color:#94a3b8">Click to sign in with Google</span></button>';
     return;
   }
   if(!gs.calendarId){
-    var h='<div style="font-size:11.5px;color:var(--tx2);margin-bottom:8px">Choose where to add FLUX events:</div>';
-    h+='<button onclick="gcalChooseCalendar(0)" style="display:block;width:100%;padding:9px 12px;margin-bottom:6px;border:1.5px solid #2563eb;border-radius:8px;background:#eff6ff;color:#1d4ed8;font-size:11.5px;font-weight:700;cursor:pointer;text-align:left">📅 New <b>FLUX Finance</b> calendar<br><span style="font-weight:400;font-size:10.5px;color:#64748b">Separate from your existing events</span></button>';
-    h+='<button onclick="gcalChooseCalendar(1)" style="display:block;width:100%;padding:9px 12px;border:1.5px solid var(--bd);border-radius:8px;background:var(--sf);color:var(--tx2);font-size:11.5px;font-weight:700;cursor:pointer;text-align:left">🗓 My primary calendar<br><span style="font-weight:400;font-size:10.5px;color:#64748b">Mix with your existing events</span></button>';
+    var h='<div style="font-size:11.5px;color:var(--tx2);margin-bottom:8px;line-height:1.4">Auto-syncs bills, income &amp; goals. Requires <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" style="color:#2563eb">Calendar API enabled</a>.</div>';
+    h+='<button onclick="gcalChooseCalendar(0)" style="display:block;width:100%;padding:9px 12px;margin-bottom:6px;border:1.5px solid #2563eb;border-radius:8px;background:#eff6ff;color:#1d4ed8;font-size:11.5px;font-weight:700;cursor:pointer;text-align:left;box-sizing:border-box">📅 New <b>FLUX Finance</b> calendar<br><span style="font-weight:400;font-size:10.5px;color:#64748b">Keeps projections separate from your events</span></button>';
+    h+='<button onclick="gcalChooseCalendar(1)" style="display:block;width:100%;padding:9px 12px;border:1.5px solid var(--bd);border-radius:8px;background:var(--sf);color:var(--tx2);font-size:11.5px;font-weight:700;cursor:pointer;text-align:left;box-sizing:border-box">🗓 My primary calendar<br><span style="font-weight:400;font-size:10.5px;color:#64748b">Mix with your existing events</span></button>';
+    h+='<div id="gcal-status" style="font-size:11px;margin-top:8px;min-height:14px"></div>';
     el.innerHTML=h;
     return;
   }
-  var calLabel=gs.calendarType==='new'?'FLUX Finance calendar':'Primary calendar';
-  var syncedStr=gs.lastSync?'Synced '+new Date(gs.lastSync).toLocaleTimeString():'Not yet synced';
-  var checked=gs.enabled?'checked':'';
+  var calLabel=gs.calendarType==='new'?'FLUX Finance':'Primary';
+  var syncStr=gs.lastSync?'Synced '+new Date(gs.lastSync).toLocaleTimeString():'Not yet synced';
   var h='';
   h+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">';
   h+='<div><div style="font-size:12px;font-weight:700;color:var(--tx)">Auto-Sync</div>';
-  h+='<div style="font-size:10.5px;color:var(--tx3)">'+calLabel+'</div></div>';
-  h+='<input type="checkbox" '+checked+' onchange="S._gcalSettings.enabled=this.checked;try{save();}catch(ex){}if(this.checked){gcalSyncAll(false);}else{gcalRemoveAll();}renderGcalSettings();" style="width:16px;height:16px;cursor:pointer;accent-color:#2563eb">';
+  h+='<div style="font-size:10.5px;color:var(--tx3)">'+calLabel+' · '+syncStr+'</div></div>';
+  h+='<input type="checkbox" '+(gs.enabled?'checked':'')+' onchange="S._gcalSettings.enabled=this.checked;try{save();}catch(ex){}if(this.checked){gcalSyncAll(false);}else{gcalRemoveAll();}renderGcalSettings();" style="width:16px;height:16px;cursor:pointer;accent-color:#2563eb">';
   h+='</div>';
   h+='<div style="display:flex;gap:6px;margin-bottom:6px">';
   h+='<button onclick="gcalSyncAll(false)" style="flex:1;padding:6px;border:1.5px solid #2563eb;border-radius:7px;background:#eff6ff;color:#1d4ed8;font-size:11px;font-weight:700;cursor:pointer">↻ Sync Now</button>';
-  h+='<button onclick="S._gcalSettings.calendarId=null;try{save();}catch(ex){}renderGcalSettings();" style="padding:6px 8px;border:1.5px solid var(--bd);border-radius:7px;background:var(--sf);color:var(--tx2);font-size:11px;cursor:pointer">Change</button>';
+  h+='<button onclick="S._gcalSettings.calendarId=null;_gcalToken=null;try{save();}catch(ex){}renderGcalSettings();" style="padding:6px 8px;border:1.5px solid var(--bd);border-radius:7px;background:var(--sf);color:var(--tx2);font-size:11px;cursor:pointer">Change</button>';
   h+='</div>';
-  h+='<div style="font-size:10.5px;color:var(--tx3);margin-bottom:4px">'+syncedStr+' · Next 90 days</div>';
   h+='<div id="gcal-status" style="font-size:11px;min-height:14px"></div>';
   el.innerHTML=h;
 }
-
 
 // Sample data loader (for demo)
 function loadSampleData(){
