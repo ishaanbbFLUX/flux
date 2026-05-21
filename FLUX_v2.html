@@ -1781,8 +1781,8 @@ ${activeGoals.slice(0,4).map(g=>{
 
   // ── Bills sections ─────────────────────────────────────────
   const billsHtml=(ubs.length>0||rmBills.length>0)?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
-<div class="cc"><div class="ch"><div><div class="ct">Due This Week</div><div class="cst">${ubs.length} bill${ubs.length!==1?'s':''} · ${fmo(ubTotal)}</div></div><button class="btn btn-s btn-sm" onclick="sw('forecast')">Calendar →</button></div>${ubs.length?`<div class="tl">${ubs.slice(0,5).map(b=>`<div class="ti"><div class="t-ic" style="background:${(CAT_COLORS[b.category]||'#94a3b8')}18">${getCatIcon(b.category)}</div><div class="t-inf"><div class="t-nm">${b.name}</div><div class="t-mt">${fds(b.dueDate)} · ${b.category}</div></div><div class="t-am exp">-${fmo(b.amount)}</div></div>`).join('')}</div>`:'<div style="color:var(--tx3);font-size:12px;padding:8px 0">No bills due this week</div>'}</div>
-<div class="cc"><div class="ch"><div><div class="ct">Due This Month</div><div class="cst">${rmBills.length} remaining · ${fmo(rmBills.reduce((s,b)=>s+b.amount,0))}</div></div></div>${rmBills.length?`<div class="tl">${rmBills.slice(0,5).map(b=>`<div class="ti"><div class="t-ic" style="background:${(CAT_COLORS[b.category]||'#94a3b8')}18">${getCatIcon(b.category)}</div><div class="t-inf"><div class="t-nm">${b.name}</div><div class="t-mt">${fds(b.dueDate)} · ${b.category}</div></div><div class="t-am exp">-${fmo(b.amount)}</div></div>`).join('')}</div>`:'<div style="color:var(--tx3);font-size:12px;padding:8px 0">No more bills this month</div>'}</div>
+<div class="cc"><div class="ch"><div><div class="ct">Due This Week</div><div class="cst">${ubs.length} bill${ubs.length!==1?'s':''} · ${fmo(ubTotal)}</div></div><button class="btn btn-s btn-sm" onclick="sw('forecast')">Calendar →</button></div>${ubs.length?`<div class="tl">${ubs.slice(0,5).map(b=>{var daysAway=Math.round((b.dueDate-today())/(1000*60*60*24));var dayLbl=daysAway===0?'Today':daysAway===1?'Tomorrow':'In '+daysAway+'d';return`<div class="ti"><div class="t-ic" style="background:${(CAT_COLORS[b.category]||'#94a3b8')}18">${getCatIcon(b.category)}</div><div class="t-inf"><div class="t-nm">${b.name||b.description}</div><div class="t-mt"><span style="font-weight:700;color:${daysAway<=2?'var(--red)':'var(--amb)'}">${dayLbl}</span> · ${fds(b.dueDate)}</div></div><div class="t-am exp">-${fmo(Math.abs(b.amount))}</div></div>`;}).join('')}</div>`:'<div style="color:var(--tx3);font-size:12px;padding:8px 0">No bills due this week</div>'}</div>
+<div class="cc"><div class="ch"><div><div class="ct">Later This Month</div><div class="cst">${rmBills.length} remaining · ${fmo(rmBills.reduce((s,b)=>s+Math.abs(b.amount),0))}</div></div></div>${rmBills.length?`<div class="tl">${rmBills.slice(0,5).map(b=>`<div class="ti"><div class="t-ic" style="background:${(CAT_COLORS[b.category]||'#94a3b8')}18">${getCatIcon(b.category)}</div><div class="t-inf"><div class="t-nm">${b.name||b.description}</div><div class="t-mt">${fds(b.dueDate)} · ${b.category}</div></div><div class="t-am exp">-${fmo(Math.abs(b.amount))}</div></div>`).join('')}</div>`:'<div style="color:var(--tx3);font-size:12px;padding:8px 0">No more bills this month</div>'}</div>
 </div>`:'';
 
   return budWidgetHtml+goalsWidgetHtml+billsHtml;
@@ -1933,22 +1933,19 @@ function isBillTx(tx){
 }
 
 function getUpcomingBills(days){
-  // Strictly days ahead from today — recurring transactions only, deduplicated by merchant
-  const s=today();const e=new Date(s);e.setDate(e.getDate()+days);e.setHours(23,59,59,999);
+  const s=today();
+  const e=new Date(s.getFullYear(),s.getMonth(),s.getDate()+days,23,59,59,999);
   const res=[];const seen=new Set();
-  // Manual recurring bills
   S.transactions.filter(isBillTx).forEach(function(tx){
     getOcc(tx,s,e).forEach(function(d){
       var k=normalizeDesc(tx.name||tx.description||'')+'_'+d.toISOString().substring(0,10);
-      if(!seen.has(k)){seen.add(k);res.push(Object.assign({},tx,{dueDate:d}));}
+      if(!seen.has(k)&&d>=s&&d<=e){seen.add(k);res.push(Object.assign({},tx,{dueDate:d}));}
     });
   });
-  // CSV recurring bills — use csvRecurringRules() which deduplicates by merchant
-  // so "Withdrawal from Rosslyn" appearing 5x in CSV only projects once
   csvRecurringRules().filter(isBillTx).forEach(function(tx){
     getOcc(tx,s,e).forEach(function(d){
       var k=normalizeDesc(tx.name||tx.description||'')+'_'+d.toISOString().substring(0,10);
-      if(!seen.has(k)){seen.add(k);res.push(Object.assign({},tx,{dueDate:d}));}
+      if(!seen.has(k)&&d>=s&&d<=e){seen.add(k);res.push(Object.assign({},tx,{dueDate:d}));}
     });
   });
   return res.sort(function(a,b){return a.dueDate-b.dueDate;});
@@ -1966,7 +1963,7 @@ function getRemainingMonthBills(){
   csvRecurringRules().filter(isBillTx).forEach(function(tx){
     getOcc(tx,now,e).forEach(function(d){
       var k=normalizeDesc(tx.name||tx.description||'')+'_'+d.toISOString().substring(0,10);
-      if(!seen.has(k)){seen.add(k);res.push(Object.assign({},r,{dueDate:d}));}
+      if(!seen.has(k)){seen.add(k);res.push(Object.assign({},tx,{dueDate:d}));}
     });
   });
   return res.sort(function(a,b){return a.dueDate-b.dueDate;});
@@ -2038,11 +2035,7 @@ function rTx(){
   var txs=[...S.csvTxs,...S.transactions].filter(function(t){var d=pd(t.date);return d>=ms&&d<=me;}).sort(function(a,b){return new Date(b.date)-new Date(a.date);});
   var allCats=[...new Set(txs.map(function(t){return t.category;}).filter(Boolean))].sort();
   if(txAccFilter!=='all')txs=txs.filter(function(t){return t.account===txAccFilter||(txAccFilter==='manual'&&!t.account);});
-  if(txFilter==='income')txs=txs.filter(function(t){return t.isIncome||t.type==='income';});
-  else if(txFilter==='bill')txs=txs.filter(function(t){return t.isBill||t.type==='bill';});
-  else if(txFilter==='purchase')txs=txs.filter(function(t){return!t.isIncome&&t.type!=='income'&&!t.isBill&&t.category!=='Transfer';});
-  else if(txFilter==='debit')txs=txs.filter(function(t){return t.amount<0;});
-  else if(txFilter==='credit')txs=txs.filter(function(t){return t.amount>0;});
+  if(txFilter!=='all')txs=txs.filter(function(t){return classifyTxSimple(t)===txFilter;});
   if(txCatFilter!=='all')txs=txs.filter(function(t){return t.category===txCatFilter;});
   if(txSearch&&txSearch.trim()){var q=txSearch.trim().toLowerCase();txs=txs.filter(function(t){return((t.name||t.description||'').toLowerCase().includes(q))||((t.category||'').toLowerCase().includes(q));});}
   // Category boxes HTML
@@ -2352,15 +2345,11 @@ function renderDashPanel(){
     subtitle=fmo(totalInc)+' in · '+fmo(totalExp)+' out · '+fmo(net2,true)+' net · '+mLabel;
     amtColor=net2>=0?'var(--pri)':'var(--red)';
   } else if(dashPanel==='bills'){
-    // Show upcoming bills from all recurring non-income transactions
-    var now3=today();var billEnd=new Date(now3.getFullYear(),now3.getMonth()+1,0);billEnd.setHours(23,59,59,999);
-    var upcomingAll=[...getUpcomingBills(30),...getRemainingMonthBills()];
-    var seen=new Set();
-    upcomingAll=upcomingAll.filter(function(b){var k=b.id+'_'+b.dueDate;if(seen.has(k))return false;seen.add(k);return true;});
+    var upcomingAll=getUpcomingBills(7);
     panelTxs=upcomingAll.map(function(b){return Object.assign({},b,{date:b.dueDate?b.dueDate.toISOString().substring(0,10):b.date});});
     totalAmt=panelTxs.reduce(function(s,t){return s+Math.abs(t.amount);},0);
-    title='📅 Upcoming Bills';
-    subtitle=panelTxs.length+' bills due · '+fmo(totalAmt)+' total';
+    title='📅 Due This Week';
+    subtitle=panelTxs.length+' bill'+(panelTxs.length!==1?'s':'')+' due in next 7 days · '+fmo(totalAmt)+' total';
     amtColor='var(--red)';
   } else {
     panelTxs=allTxs;
