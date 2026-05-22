@@ -4430,8 +4430,13 @@ async function loadFinancialNews(){
   if(btn){btn.textContent='Loading…';btn.disabled=true;}
   feed.innerHTML='<div style="text-align:center;padding:20px;color:var(--tx3);font-size:12px">📡 Fetching headlines…</div>';
 
-  // Check for Groq API key
-  var groqKey=S._aiSettings&&S._aiSettings.groqKey;
+  // Ensure AI settings are loaded (only loaded on-demand otherwise)
+  loadAISettings();
+
+  // Get Groq key — stored at _aiSettings.keys.groq
+  var groqKey=(_aiSettings&&_aiSettings.keys&&_aiSettings.keys.groq)
+            ||(S._aiSettings&&S._aiSettings.keys&&S._aiSettings.keys.groq)
+            ||'';
   if(!groqKey){
     feed.innerHTML='<div style="padding:12px;background:#fef3c7;border-radius:8px;color:#92400e;font-size:12px">'
       +'⚠️ Add your free Groq API key in Ask FLUX → Settings to enable the news feed.<br>'
