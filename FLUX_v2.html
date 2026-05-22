@@ -426,6 +426,18 @@ body{background:var(--bg);color:var(--tx);font-family:'Plus Jakarta Sans',sans-s
 .dp-tx-meta{font-size:10.5px;color:var(--tx3)}
 .dp-tx-amt{font-size:13px;font-weight:700;font-family:JetBrains Mono,monospace;white-space:nowrap}
 .sc.active-panel{box-shadow:0 0 0 2px var(--pri);background:var(--prd)}
+
+/* ── Category Cards ── */
+.cat-cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:14px}
+.cat-card{padding:13px 14px;border:1.5px solid var(--bd);border-radius:12px;background:var(--sf);cursor:pointer;transition:border-color .15s,box-shadow .15s}
+.cat-card:hover{border-color:#93c5fd;box-shadow:0 2px 12px rgba(37,99,235,.08)}
+.cat-card.cat-active{border-color:var(--pri);background:var(--prd)}
+.cat-card-all{grid-column:span 2;padding:14px 16px;border:1.5px solid var(--bd);border-radius:12px;background:var(--sf);cursor:pointer;display:flex;align-items:center;gap:16px;transition:border-color .15s}
+.cat-card-all:hover{border-color:#93c5fd}
+.cat-card-all.cat-active{border-color:var(--pri);background:var(--prd)}
+.cat-drill{border:1.5px solid var(--pri);border-radius:12px;overflow:hidden;margin-bottom:14px;animation:slideDown .2s ease}
+.cat-drill-hdr{padding:12px 16px;background:var(--prd);display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--bd)}
+.cat-drill-body{max-height:380px;overflow-y:auto}
 </style>
 <!-- Google Identity Services -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -939,10 +951,41 @@ function isTransfer(t){
   var desc=(t.description||t.name||'').toUpperCase().trim();
   // Zelle, Cash App, Venmo are purchases — never transfers
   if(/ZELLE|CASH\s?APP|CASHAPP|VENMO/.test(desc))return false;
-  // Explicitly flagged as transfer
+  // Explicitly flagged as transfer by user or prior logic
   if(t.isTransfer===true||t.type==='transfer'||t.category==='Transfer')return true;
-  // Account-to-account movement keywords (must start with these)
-  return /^(DEPOSIT FROM|WITHDRAWAL FROM|WITHDRAWAL TO|OVERDRAFT TRANSFER|ONLINE TRANSFER|ACCOUNT TRANSFER|INTERNAL TRANSFER|XFER |TRSF )/.test(desc);
+  // Unambiguous transfer keywords
+  if(/^(OVERDRAFT TRANSFER|ONLINE TRANSFER|ACCOUNT TRANSFER|INTERNAL TRANSFER|XFER |TRSF )/.test(desc))return true;
+  // "DEPOSIT FROM" or "WITHDRAWAL TO/FROM" — only a transfer if followed by account-type words
+  // NOT a transfer if followed by a company, payroll, refund, or person's name
+  var depositFromMatch=desc.match(/^(DEPOSIT FROM|WITHDRAWAL FROM|WITHDRAWAL TO)\s+(.*)/);
+  if(depositFromMatch){
+    var rest=depositFromMatch[2];
+    // Must contain account-type words to be a real transfer
+    var isAcctTransfer=/\b(SAVINGS|CHECKING|BROKERAGE|INVEST|MONEY MARKET|SWEEP|ACCOUNT|ACCT|XFER)\b/.test(rest);
+    // Definitely NOT a transfer if these keywords appear
+    var isNotTransfer=/\b(PAYROLL|PAYCHECK|SALARY|ACH CREDIT|REFUND|RETURN|REWARD|BONUS|DIVIDEND|INSURANCE|TAX|REIMBURS|BENEFIT|PENSION|ANNUITY|INTEREST|CREDIT)\b/.test(rest);
+    if(isNotTransfer)return false;
+    return isAcctTransfer;
+  }
+  return false;
+}
+
+// Helper: explain WHY a transaction is classified as a transfer (for audit)
+function isTransferReason(t){
+  var desc=(t.description||t.name||'').toUpperCase().trim();
+  if(/ZELLE|CASH\s?APP|CASHAPP|VENMO/.test(desc))return 'Excluded: Zelle/CashApp/Venmo';
+  if(t.isTransfer===true)return 'User-flagged as transfer';
+  if(t.type==='transfer')return 'Type = transfer';
+  if(t.category==='Transfer')return 'Category = Transfer';
+  if(/^(OVERDRAFT TRANSFER|ONLINE TRANSFER|ACCOUNT TRANSFER|INTERNAL TRANSFER)/.test(desc))return 'Starts with transfer keyword';
+  var m=desc.match(/^(DEPOSIT FROM|WITHDRAWAL FROM|WITHDRAWAL TO)\s+(.*)/);
+  if(m){
+    var rest=m[2];
+    if(/\b(PAYROLL|PAYCHECK|SALARY|ACH CREDIT|REFUND|RETURN|REWARD|BONUS|DIVIDEND|INSURANCE|TAX|REIMBURS|BENEFIT|PENSION|ANNUITY|INTEREST|CREDIT)\b/.test(rest))return 'NOT transfer: contains income/refund keyword';
+    if(/\b(SAVINGS|CHECKING|BROKERAGE|INVEST|MONEY MARKET|SWEEP|ACCOUNT|ACCT|XFER)\b/.test(rest))return 'Deposit/Withdrawal + account keyword';
+    return 'Deposit/Withdrawal — no account keyword found → classified as income/credit';
+  }
+  return 'Not a transfer';
 }
 
 function detectTransfers(txs){
@@ -1085,7 +1128,7 @@ function detectRecurring(txs){
 
 let S={currentBalance:0,transactions:[],csvTxs:[],goals:[],accounts:{},activeTab:'dashboard',budgets:{},learnedRules:{},accountMeta:{},csvMappings:{}};
 let CHS={};
-let txFilter='all',txAccFilter='all',txCatFilter='all',txSearch='',dashPanel=null,foreMonth=new Date().getMonth(),foreYear=new Date().getFullYear(),stripDays=7,selectedAccView='all';
+let txFilter='all',txAccFilter='all',txCatFilter='all',txSearch='',dashPanel=null,anaCatOpen=null,foreMonth=new Date().getMonth(),foreYear=new Date().getFullYear(),stripDays=7,selectedAccView='all';
 let selDay=null;
 
 function save(){
@@ -1696,10 +1739,27 @@ CHS[id]=new Chart(c,{type:'line',data:{labels:data.map((_,i)=>i),datasets:[{data
 
 const scales={x:{grid:{display:false},ticks:{color:'#94a3b8',font:{size:10},maxTicksLimit:8},border:{color:'#e2e8f0'}},y:{grid:{color:'rgba(0,0,0,.04)'},ticks:{color:'#94a3b8',font:{family:"'JetBrains Mono',monospace",size:9.5},callback:v=>v>=1000?'$'+Math.round(v/1000)+'k':'$'+v.toLocaleString()},border:{color:'#e2e8f0'}}};
 
-function sw(tab){S.activeTab=tab;document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('on'));document.getElementById('tab-'+tab).classList.add('on');document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));document.querySelectorAll('.ni').forEach(n=>{const t=n.textContent.trim().toLowerCase();if(tab==='dashboard'&&t.startsWith('dash'))n.classList.add('on');else if(tab==='transactions'&&t.startsWith('trans'))n.classList.add('on');else if(tab==='forecast'&&t.startsWith('fore'))n.classList.add('on');else if(tab==='goals'&&t.startsWith('goal'))n.classList.add('on');else if(tab==='analytics'&&t.startsWith('anal'))n.classList.add('on')});
+function sw(tab){
+  S.activeTab=tab;
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('on'));
+  document.getElementById('tab-'+tab).classList.add('on');
+  document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));
+  document.querySelectorAll('.ni').forEach(n=>{
+    const t=n.textContent.trim().toLowerCase();
+    if(tab==='dashboard'&&t.startsWith('dash'))n.classList.add('on');
+    else if(tab==='transactions'&&t.startsWith('trans'))n.classList.add('on');
+    else if(tab==='forecast'&&t.startsWith('fore'))n.classList.add('on');
+    else if(tab==='goals'&&t.startsWith('goal'))n.classList.add('on');
+    else if(tab==='analytics'&&t.startsWith('anal'))n.classList.add('on');
+  });
+  // Always re-render the tab being switched to
+  if(tab==='dashboard')rDash();
+  else if(tab==='transactions')rTx();
+  else if(tab==='forecast')rFore();
+  else if(tab==='goals')rGoals();
+  else if(tab==='analytics')rAna();
+}
 Object.keys(CHS).forEach(k=>dchart(k));
-({dashboard:rDash,transactions:rTx,forecast:rFore,goals:rGoals,analytics:rAna})[tab]()}
-
 function updSidebar(){
   const el=document.getElementById('sl-accounts');if(!el)return;
   const allAcc=getAllAccounts();
@@ -1729,7 +1789,7 @@ function updSidebar(){
         balHtml='<div class="sl-acc-bal" style="color:#94a3b8">'+(cnt>0?cnt+' txs':'No data')+'</div>';
       }
       const utilBar=isCreditCard&&util!==null?'<div style="height:3px;background:#e2e8f0;border-radius:2px;margin-top:5px"><div style="height:3px;border-radius:2px;background:'+utilColor+';width:'+util+'%"></div></div>':'';
-      html+=`<div class="sl-acc ${selectedAccView===num?'sel':''}" onclick="selectedAccView='${num}';updSidebar();if(S.activeTab==='transactions')rTx()">
+      html+=`<div class="sl-acc ${selectedAccView===num?'sel':''}" onclick="selectedAccView='${num}';updSidebar();if(S.activeTab==='transactions')rTx();else if(S.activeTab==='analytics')rAna();">
       <div style="display:flex;justify-content:space-between;align-items:flex-start">
         <div>
           <div class="sl-acc-name">${info.name}${ccBadge}</div>
@@ -2115,6 +2175,103 @@ function cycleLbl(id){
   sw(S.activeTab);
 }
 
+function getCatBreakdown(year,month,accFilter){
+  // Account-aware category breakdown
+  var s=new Date(year,month,1);var e=new Date(year,month+1,0);e.setHours(23,59,59,999);
+  var txs=[...S.csvTxs,...S.transactions].filter(function(t){
+    var d=pd(t.date);
+    if(d<s||d>e)return false;
+    if(isTransfer(t)||t.isIncome||t.type==='income')return false;
+    if(accFilter&&accFilter!=='all'&&t.account&&t.account!==accFilter)return false;
+    return true;
+  });
+  var breakdown={};
+  txs.forEach(function(t){
+    var cat=t.category||'Other';
+    breakdown[cat]=(breakdown[cat]||0)+Math.abs(t.amount);
+  });
+  return breakdown;
+}
+
+function getCatTxs(year,month,cat,accFilter){
+  // Get all transactions for a specific category
+  var s=new Date(year,month,1);var e=new Date(year,month+1,0);e.setHours(23,59,59,999);
+  return [...S.csvTxs,...S.transactions].filter(function(t){
+    var d=pd(t.date);
+    if(d<s||d>e)return false;
+    if(isTransfer(t)||t.isIncome||t.type==='income')return false;
+    if(accFilter&&accFilter!=='all'&&t.account&&t.account!==accFilter)return false;
+    if(cat!=='all'&&cat!=='recurring'&&(t.category||'Other')!==cat)return false;
+    if(cat==='recurring'&&!(t.isRecurring||t.recurring))return false;
+    return true;
+  }).sort(function(a,b){return pd(b.date)-pd(a.date);});
+}
+
+function setCatBudget(cat){
+  if(!cat)return;
+  var v=prompt('Set monthly budget for '+cat+' ($):');
+  if(v&&!isNaN(v)&&parseFloat(v)>0){
+    if(!S.budgets)S.budgets={};
+    S.budgets[cat]=parseFloat(v);
+    try{save();}catch(e){}
+    rAna();
+  }
+}
+
+function closeCatDrillDown(){anaCatOpen=null;renderCatDrillDown();document.querySelectorAll('.cat-card,.cat-card-all').forEach(function(e){e.classList.remove('cat-active');});}
+
+function openCatDrillDown(cat){cat=(cat||'').replace(/&apos;/g,"'");
+  anaCatOpen=anaCatOpen===cat?null:cat;
+  var allCards=document.querySelectorAll('.cat-card,.cat-card-all');
+  allCards.forEach(function(el){el.classList.remove('cat-active');});
+  if(anaCatOpen){
+    var activeCard=document.querySelector('[data-cat="'+anaCatOpen+'"]');
+    if(activeCard)activeCard.classList.add('cat-active');
+  }
+  renderCatDrillDown();
+}
+
+function renderCatDrillDown(){
+  var slot=document.getElementById('cat-drill-slot');
+  if(!slot)return;
+  if(!anaCatOpen){slot.innerHTML='';return;}
+  var cat=anaCatOpen;
+  var txs=getCatTxs(anaYear,anaMonth,cat,selectedAccView);
+  var total=txs.reduce(function(s,t){return s+Math.abs(t.amount);},0);
+  var isRec=cat==='recurring';var isAll=cat==='all';
+  var catLabel=isRec?'🔄 Recurring Charges':isAll?'📊 All Expenses':getCatIcon(cat)+' '+cat;
+  var budget=!isRec&&!isAll&&S.budgets&&S.budgets[cat]?S.budgets[cat]:0;
+  var h='<div class="cat-drill">';
+  h+='<div class="cat-drill-hdr">';
+  h+='<div style="display:flex;align-items:center;gap:10px"><span style="font-size:16px">'+catLabel+'</span>'
+    +'<span style="font-size:11px;color:var(--tx3)">'+txs.length+' transactions</span></div>';
+  h+='<div style="display:flex;align-items:center;gap:10px">';
+  h+='<span style="font-family:JetBrains Mono,monospace;font-size:14px;font-weight:900;color:var(--red)">-'+fmo(total)+'</span>';
+  if(budget>0){h+='<span style="font-size:10.5px;color:'+(total>budget?'var(--red)':'var(--grn)')+'">'+fmo(budget)+' budget</span>';}
+    h+='<button onclick="closeCatDrillDown()" style="width:26px;height:26px;border:none;background:none;cursor:pointer;font-size:16px;color:var(--tx3)">✕</button>';
+  h+='</div></div>';
+  if(!txs.length){h+='<div style="padding:20px;text-align:center;color:var(--tx3);font-size:12.5px">No transactions found for this period</div>';}
+  else{
+    h+='<div class="cat-drill-body">';
+    txs.forEach(function(t){
+      var simType=classifyTxSimple(t);
+      var typeColor=classifyTxColor(simType);
+      var merchant=t.name||t.description||'Transaction';
+      if(merchant.length>36)merchant=merchant.substring(0,34)+'…';
+          h+='<div class="dp-tx" onclick="openUpdateFinancials(\''+txTypeFromTx(t)+'\',\''+t.id+'\')">'; 
+      h+='<div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--tx)">'+merchant+'</div>';
+      h+='<div style="font-size:10.5px;color:var(--tx3);margin-top:1px">'+fds(pd(t.date))+(t.account?' · ••••'+t.account:'')+(t.isRecurring||t.recurring?' · ↻ '+( t.frequency||'monthly'):'')+'</div></div>';
+      h+='<div style="text-align:right"><div style="font-family:JetBrains Mono,monospace;font-size:13px;font-weight:700;color:var(--red)">-'+fmo(Math.abs(t.amount))+'</div>';
+      h+='<div style="font-size:9.5px;font-weight:700;color:'+typeColor+';background:'+typeColor+'18;padding:1px 5px;border-radius:4px;margin-top:2px">'+classifyTxLabel(simType)+'</div></div>';
+      h+='<div style="font-size:11px;color:var(--tx3)">✎</div>';
+      h+='</div>';
+    });
+    h+='</div>';
+  }
+  h+='</div>';
+  slot.innerHTML=h;
+}
+
 function getCatStats(year,month){
   var s=new Date(year,month,1);var e=new Date(year,month+1,0);e.setHours(23,59,59,999);
   var stats={};
@@ -2143,7 +2300,8 @@ function rTx(){
   var txs=[...S.csvTxs,...S.transactions].filter(function(t){var d=pd(t.date);return d>=ms&&d<=me;}).sort(function(a,b){return new Date(b.date)-new Date(a.date);});
   var allCats=[...new Set(txs.map(function(t){return t.category;}).filter(Boolean))].sort();
   if(txAccFilter!=='all')txs=txs.filter(function(t){return t.account===txAccFilter||(txAccFilter==='manual'&&!t.account);});
-  if(txFilter!=='all')txs=txs.filter(function(t){return classifyTxSimple(t)===txFilter;});
+  if(txFilter==='recurring'){txs=txs.filter(function(t){return t.isRecurring||t.recurring;});}
+  else if(txFilter!=='all'){txs=txs.filter(function(t){return classifyTxSimple(t)===txFilter;});}
   if(txCatFilter!=='all')txs=txs.filter(function(t){return t.category===txCatFilter;});
   if(txSearch&&txSearch.trim()){var q=txSearch.trim().toLowerCase();txs=txs.filter(function(t){return((t.name||t.description||'').toLowerCase().includes(q))||((t.category||'').toLowerCase().includes(q));});}
   // Category boxes HTML
@@ -2242,7 +2400,7 @@ function rTx(){
   +'<div class="acc-tab"><button class="acc-t '+(txAccFilter==='all'?'on':'')+'" onclick="txAccFilter=\'all\';rTx()">All Accounts</button>'
   +Object.entries(getAllAccounts()).map(function(e){var num=e[0],info=e[1];return'<button class="acc-t '+(txAccFilter===num?'on':'')+'" onclick="txAccFilter=\''+num+'\';rTx()" style="'+(txAccFilter===num?'border-color:'+info.color+';color:'+info.color+';background:'+info.color+'12':'')+'">'+''+info.short+' ••••'+num+'</button>';}).join('')
   +'<button class="acc-t '+(txAccFilter==='manual'?'on':'')+'" onclick="txAccFilter=\'manual\';rTx()">Manual</button></div>'
-  +'<div class="tf"><button class="fb '+(txFilter==='all'?'on':'')+'" onclick="txFilter=\'all\';rTx()">All</button><button class="fb '+(txFilter==='purchase'?'on':'')+'" onclick="txFilter=\'purchase\';rTx()">Purchase</button><button class="fb '+(txFilter==='payment'?'on':'')+'" onclick="txFilter=\'payment\';rTx()">Payment</button><button class="fb '+(txFilter==='credit'?'on':'')+'" onclick="txFilter=\'credit\';rTx()">Credit</button><button class="fb '+(txFilter==='transfer'?'on':'')+'" onclick="txFilter=\'transfer\';rTx()">Transfer</button><button class="fb '+(txFilter==='interest'?'on':'')+'" onclick="txFilter=\'interest\';rTx()">Interest</button>'
+  +'<div class="tf"><button class="fb '+(txFilter==='all'?'on':'')+'" onclick="txFilter=\'all\';rTx()">All</button><button class="fb '+(txFilter==='purchase'?'on':'')+'" onclick="txFilter=\'purchase\';rTx()">Purchase</button><button class="fb '+(txFilter==='payment'?'on':'')+'" onclick="txFilter=\'payment\';rTx()">Payment</button><button class="fb '+(txFilter==='credit'?'on':'')+'" onclick="txFilter=\'credit\';rTx()">Credit</button><button class="fb '+(txFilter==='transfer'?'on':'')+'" onclick="txFilter=\'transfer\';rTx()">Transfer</button><button class="fb '+(txFilter==='interest'?'on':'')+'" onclick="txFilter=\'interest\';rTx()">Interest</button><button class="fb '+(txFilter==='recurring'?'on':'')+'" onclick="txFilter=\'recurring\';rTx()">↻ Recurring</button>'
   +'<span style="width:1px;height:18px;background:var(--bd);margin:0 2px"></span>'
   +allCats.slice(0,10).map(function(c){return'<button class="fb '+(txCatFilter===c?'on':'')+'" onclick="txCatFilter=\''+c+'\';rTx()">'+c+'</button>';}).join('')
   +(txCatFilter!=='all'?'<button class="fb on" style="color:var(--red);border-color:var(--red)" onclick="txCatFilter=\'all\';rTx()">✕ Clear</button>':'')
@@ -2690,14 +2848,82 @@ function rAna(){
   const wants=Object.entries(ecat).filter(([c])=>wants_.includes(c)).reduce((s,[,v])=>s+v,0);
   const savingsAmt=S.goals.filter(g=>!g.completed).reduce((s,g)=>s+(g.monthlyAllocation||0),0);
   const panel=document.getElementById('tab-analytics');
-  panel.innerHTML='<div class="ph"><div><div class="pt">Analytics & Insights</div></div>'+globalActions()+'</div>'
+  // Account-aware category breakdown
+  var accFilter=selectedAccView==='all'?'all':selectedAccView;
+  var catBreak=getCatBreakdown(anaYear,anaMonth,accFilter);
+  var totalSpend=Object.values(catBreak).reduce(function(s,v){return s+v;},0);
+  var totalBudget=Object.keys(catBreak).reduce(function(s,k){return s+(S.budgets&&S.budgets[k]?S.budgets[k]:0);},0);
+  var budPct=totalBudget>0?Math.min(100,Math.round(totalSpend/totalBudget*100)):null;
+  var accLabel=accFilter==='all'?'All Accounts':(getAccountInfo(accFilter).name||'Account ••••'+accFilter);
+  var recTxsAna=[...S.csvTxs,...S.transactions].filter(function(t){
+    var d=pd(t.date);var s=new Date(anaYear,anaMonth,1);var e=new Date(anaYear,anaMonth+1,0);
+    return d>=s&&d<=e&&(t.isRecurring||t.recurring)&&!isTransfer(t)&&!t.isIncome&&t.type!=='income'
+      &&(accFilter==='all'||!t.account||t.account===accFilter);
+  });
+  var recTotal=recTxsAna.reduce(function(s,t){return s+Math.abs(t.amount);},0);
+  var sortedCats=Object.entries(catBreak).sort(function(a,b){return b[1]-a[1];});
+
+  panel.innerHTML='<div class="ph"><div><div class="pt">Analytics & Insights</div><div class="ps">'+accLabel+' · '+anaLabel+'</div></div>'+globalActions()+'</div>'
   +'<div class="mf-bar"><div class="mf-title">Period:</div><div class="mf-nav"><button class="mf-nav-btn" onclick="anaNavMo(-1)">&#8249;</button><div class="mf-label">'+anaLabel+'</div><button class="mf-nav-btn" onclick="anaNavMo(1)">&#8250;</button></div><button class="fb" style="margin-left:8px" onclick="anaYear=new Date().getFullYear();anaMonth=new Date().getMonth();rAna()">Today</button></div>';
+
+  // ── CATEGORY CARDS ──────────────────────────────────────────────────
+  var catCardsHtml='<div style="margin-bottom:6px;display:flex;align-items:center;justify-content:space-between">'
+    +'<div style="font-size:12px;font-weight:800;color:var(--tx2);text-transform:uppercase;letter-spacing:.6px">Spending by Category</div>'
+    +'<button onclick="openBudgetModal()" style="font-size:11px;color:var(--pri);background:none;border:none;cursor:pointer;font-weight:600;font-family:Plus Jakarta Sans,sans-serif">⚙ Manage Budgets</button>'
+    +'</div>';
+
+  // All Categories card
+  var allBudColor=budPct===null?'var(--tx3)':budPct>=100?'var(--red)':budPct>=80?'#d97706':'var(--grn)';
+  catCardsHtml+='<div class="cat-cards-grid" style="margin-bottom:0">'
+    +'<div class="cat-card-all" data-cat="all" onclick="openCatDrillDown(&apos;all&apos;)">'
+    +'<div style="flex:1">'
+    +'<div style="font-size:10.5px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">All Categories</div>'
+    +'<div style="font-family:JetBrains Mono,monospace;font-size:22px;font-weight:900;color:var(--tx)">-'+fmo(totalSpend)+'</div>'
+    +(totalBudget>0?'<div style="font-size:10.5px;color:var(--tx3);margin-top:1px">of '+fmo(totalBudget)+' budgeted · <span style="color:'+allBudColor+';font-weight:700">'+budPct+'%</span></div>':'<div style="font-size:10.5px;color:var(--tx3);margin-top:1px">'+sortedCats.length+' categories</div>')
+    +'</div>'
+    +(totalBudget>0?'<div style="width:80px;text-align:center"><div style="font-size:20px;font-weight:900;color:'+allBudColor+'">'+budPct+'%</div><div style="height:4px;background:var(--s3);border-radius:2px;margin-top:4px"><div style="height:4px;border-radius:2px;background:'+allBudColor+';width:'+Math.min(100,budPct)+'%"></div></div></div>':'')
+    +'</div>'
+    // Recurring card
+    +'<div class="cat-card-all" data-cat="recurring" onclick="openCatDrillDown(&apos;recurring&apos;)">'
+    +'<div style="flex:1">'
+    +'<div style="font-size:10.5px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">🔄 Recurring Charges</div>'
+    +'<div style="font-family:JetBrains Mono,monospace;font-size:22px;font-weight:900;color:#7c3aed">-'+fmo(recTotal)+'</div>'
+    +'<div style="font-size:10.5px;color:var(--tx3);margin-top:1px">'+recTxsAna.length+' recurring this month</div>'
+    +'</div>'
+    +'<div style="font-size:28px">↻</div>'
+    +'</div>'
+    +'</div>';
+
+  // Individual category cards
+  catCardsHtml+='<div class="cat-cards-grid" style="margin-top:10px">';
+  sortedCats.forEach(function(entry){
+    var cat=entry[0];var spent=entry[1];
+    var bud=S.budgets&&S.budgets[cat]?S.budgets[cat]:0;
+    var pct=bud>0?Math.min(100,Math.round(spent/bud*100)):null;
+    var barColor=pct===null?'var(--pri)':pct>=100?'var(--red)':pct>=80?'#d97706':'var(--grn)';
+        catCardsHtml+='<div class="cat-card" data-cat="'+cat+'" onclick="openCatDrillDown(this.dataset.cat)">'
+      +'<div style="font-size:20px;margin-bottom:5px">'+getCatIcon(cat)+'</div>'
+      +'<div style="font-size:11px;font-weight:700;color:var(--tx2);margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+cat+'</div>'
+      +'<div style="font-family:JetBrains Mono,monospace;font-size:15px;font-weight:900;color:var(--tx)">'+fmo(spent)+'</div>'
+      +(bud>0?'<div style="font-size:9.5px;color:'+barColor+';font-weight:700;margin-top:1px">'+pct+'% of '+fmo(bud)+'</div>'
+                          :'<button onclick="event.stopPropagation();setCatBudget(this.closest(\'.cat-card\').dataset.cat)" style="font-size:9px;color:var(--pri);background:none;border:none;cursor:pointer;padding:0;font-family:Plus Jakarta Sans,sans-serif;margin-top:1px">+ Set budget</button>')
+      +(bud>0?'<div style="height:3px;background:var(--s3);border-radius:2px;margin-top:5px"><div style="height:3px;border-radius:2px;background:'+barColor+';width:'+pct+'%"></div></div>':'')
+      +'</div>';
+  });
+  if(!sortedCats.length){
+    catCardsHtml+='<div style="grid-column:span 4;text-align:center;padding:24px;color:var(--tx3);font-size:12.5px">No expense data for this period. Import a bank CSV to get started.</div>';
+  }
+  catCardsHtml+='</div>';
+  catCardsHtml+='<div id="cat-drill-slot" style="margin-top:10px"></div>';
+
+  panel.innerHTML+=catCardsHtml;
+
   // News feed section
-  panel.innerHTML+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">'
-    +'<div style="font-size:13px;font-weight:800;color:var(--tx)">📰 Financial Pulse</div>'
+  panel.innerHTML+='<div style="display:flex;align-items:center;justify-content:space-between;margin:4px 0 10px">'
+    +'<div style="font-size:12px;font-weight:800;color:var(--tx2);text-transform:uppercase;letter-spacing:.6px">📰 Financial Pulse</div>'
     +'<button onclick="loadFinancialNews()" id="news-refresh-btn" style="padding:5px 12px;border:1.5px solid #2563eb;border-radius:7px;background:#eff6ff;color:#1d4ed8;font-size:11.5px;font-weight:700;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif">↻ Refresh</button>'
     +'</div>'
-    +'<div id="news-feed" style="margin-bottom:18px"><div style="text-align:center;padding:20px;color:var(--tx3);font-size:12.5px">Click Refresh to load financial news relevant to your situation.</div></div>';
+    +'<div id="news-feed" style="margin-bottom:14px"><div style="text-align:center;padding:16px;color:var(--tx3);font-size:12px">Click Refresh to load news relevant to your finances.</div></div>';
 
   panel.innerHTML+=`<div class="cg2">
 <div>
@@ -3421,7 +3647,14 @@ function saveUFTx(){
     try{save();}catch(ignored){}
     try{rebuildAccounts();updSidebar();}catch(e){}
     if(btn){btn.textContent='✓ Saved!';btn.style.background='#16a34a';}
-    setTimeout(function(){closeMo();sw(S.activeTab);},600);
+    // Refresh the current tab immediately so changes are visible
+    try{
+      if(S.activeTab==='transactions')rTx();
+      else if(S.activeTab==='dashboard')rDash();
+      else if(S.activeTab==='analytics')rAna();
+      else if(S.activeTab==='forecast')rFore();
+    }catch(e){}
+    setTimeout(function(){closeMo();},800);
   }catch(e){showErr('Error: '+e.message);}
 }
 
@@ -4543,6 +4776,91 @@ async function loadFinancialNews(){
     console.error('News feed error:',e);
   }
   if(btn){btn.textContent='↻ Refresh';btn.disabled=false;}
+}
+
+
+function openTransferAudit(){
+  var allTxs=[...S.csvTxs,...S.transactions];
+  // Show all "Deposit from / Withdrawal" transactions with their classification
+  var candidates=allTxs.filter(function(t){
+    var d=(t.description||t.name||'').toUpperCase().trim();
+    return /^(DEPOSIT FROM|WITHDRAWAL FROM|WITHDRAWAL TO|OVERDRAFT TRANSFER|ONLINE TRANSFER|ACCOUNT TRANSFER|XFER|TRSF)/.test(d);
+  }).sort(function(a,b){return pd(b.date)-pd(a.date);});
+
+  if(!candidates.length){
+    alert('No Deposit from / Withdrawal transactions found in your data.');
+    return;
+  }
+
+  var rows=candidates.slice(0,100).map(function(t){
+    var isTrf=isTransfer(t);
+    var reason=isTransferReason(t);
+    var type=isTrf?'transfer':classifyTxSimple(t);
+    var typeColor=isTrf?'#64748b':classifyTxColor(type);
+    var merchant=(t.name||t.description||'').substring(0,45);
+    return '<tr style="border-bottom:1px solid var(--bd)">'
+      +'<td style="padding:7px 8px;font-size:11.5px;color:var(--tx)">'+(merchant)+'</td>'
+      +'<td style="padding:7px 8px;font-size:11px;color:var(--tx3)">'+fd(t.date)+'</td>'
+      +'<td style="padding:7px 8px;font-family:JetBrains Mono,monospace;font-size:12px;font-weight:700;color:'+(t.amount<0?'var(--red)':'var(--grn)')+'">'+fmo(t.amount)+'</td>'
+      +'<td style="padding:7px 8px"><span style="font-size:10px;font-weight:700;color:'+typeColor+';background:'+typeColor+'18;padding:2px 7px;border-radius:4px">'+classifyTxLabel(type)+'</span></td>'
+      +'<td style="padding:7px 8px;font-size:10.5px;color:var(--tx3)">'+reason+'</td>'
+      +'<td style="padding:7px 8px">'
+        +'<select onchange="overrideTransferType(\''+t.id+'\',this.value)" style="font-size:10.5px;padding:3px 6px;border:1px solid var(--bd);border-radius:5px;background:var(--sf);color:var(--tx)">'
+        +'<option value="">Override…</option>'
+        +'<option value="transfer"'+(isTrf?' selected':'')+'>Transfer</option>'
+        +'<option value="income"'+(type==='payment'?' selected':'')+'>Income / Payment</option>'
+        +'<option value="credit"'+(type==='credit'?' selected':'')+'>Credit / Refund</option>'
+        +'<option value="purchase"'+(type==='purchase'?' selected':'')+'>Purchase</option>'
+        +'</select>'
+      +'</td>'
+      +'</tr>';
+  }).join('');
+
+  var html='<div id="transfer-audit-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px">'
+    +'<div style="background:var(--bg);border-radius:16px;width:900px;max-width:100%;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.2)">'
+    +'<div style="padding:16px 20px;border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between">'
+      +'<div><div style="font-size:15px;font-weight:800;color:var(--tx)">🔍 Transfer Classification Audit</div>'
+      +'<div style="font-size:11.5px;color:var(--tx3);margin-top:2px">'+candidates.length+' Deposit/Withdrawal transactions · review and override any misclassified ones</div></div>'
+      +'<button onclick="document.getElementById(\'transfer-audit-modal\').remove()" style="width:30px;height:30px;border:none;background:none;cursor:pointer;font-size:18px;color:var(--tx3)">✕</button>'
+    +'</div>'
+    +'<div style="padding:10px 14px;background:#fffbeb;border-bottom:1px solid #fef08a;font-size:11.5px;color:#92400e">'
+      +'💡 <strong>How classification works:</strong> "Deposit from SAVINGS/CHECKING" = Transfer · "Deposit from GEICO" = Credit/Refund · "Deposit from MACYS PAYROLL" = Income · Zelle/CashApp = Purchase'
+    +'</div>'
+    +'<div style="overflow-y:auto;flex:1">'
+      +'<table style="width:100%;border-collapse:collapse">'
+      +'<thead style="position:sticky;top:0;background:var(--sf);z-index:1">'
+        +'<tr style="border-bottom:2px solid var(--bd)">'
+          +'<th style="padding:8px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Description</th>'
+          +'<th style="padding:8px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Date</th>'
+          +'<th style="padding:8px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Amount</th>'
+          +'<th style="padding:8px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Type</th>'
+          +'<th style="padding:8px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Reason</th>'
+          +'<th style="padding:8px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Override</th>'
+        +'</tr>'
+      +'</thead>'
+      +'<tbody>'+rows+'</tbody>'
+      +'</table>'
+    +'</div>'
+    +'<div style="padding:12px 20px;border-top:1px solid var(--bd);display:flex;gap:8px;justify-content:flex-end">'
+      +'<button onclick="document.getElementById(\'transfer-audit-modal\').remove()" style="padding:8px 20px;border:1.5px solid var(--bd);border-radius:8px;background:var(--sf);font-size:13px;font-weight:600;cursor:pointer;color:var(--tx2);font-family:Plus Jakarta Sans,sans-serif">Close</button>'
+    +'</div>'
+    +'</div></div>';
+
+  document.body.insertAdjacentHTML('beforeend',html);
+}
+
+function overrideTransferType(txId,newType){
+  if(!newType)return;
+  var tx=[...S.csvTxs,...S.transactions].find(function(t){return t.id===txId;});
+  if(!tx)return;
+  if(newType==='transfer'){tx.isTransfer=true;tx.type='transfer';tx.category='Transfer';tx.isIncome=false;}
+  else if(newType==='income'){tx.isTransfer=false;tx.isIncome=true;tx.type='income';tx.category='Income';}
+  else if(newType==='credit'){tx.isTransfer=false;tx.isIncome=false;tx.type='credit';tx.category=tx.category==='Transfer'?'Other':tx.category;}
+  else if(newType==='purchase'){tx.isTransfer=false;tx.isIncome=false;tx.type='purchase';}
+  try{save();}catch(e){}
+  // Refresh audit modal
+  document.getElementById('transfer-audit-modal').remove();
+  openTransferAudit();
 }
 
 window.addEventListener('DOMContentLoaded',()=>{if(load()){document.getElementById('setup').style.display='none';document.getElementById('app').style.display='flex';updSidebar();sw('dashboard');setTimeout(function(){initGoogleAuth();updGoogleUI();setTimeout(function(){if(S._gcalSettings&&S._gcalSettings.enabled)gcalSyncAll(true);},2000);},800);}});
