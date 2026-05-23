@@ -522,6 +522,53 @@ body{background:var(--bg);color:var(--tx);font-family:'Plus Jakarta Sans',sans-s
   .sidebar{transform:translateX(0)!important}
   .mobile-only{display:none!important}
 }
+
+/* ─── TABLET / FOLDABLE UNFOLDED (640px – 1023px) ─── */
+@media(min-width:640px) and (max-width:1023px){
+  :root{--sw:56px}  /* Collapse sidebar to icon-only width */
+
+  /* Sidebar: icon-only strip */
+  .sidebar{overflow:visible}
+  .sl-logo,.sl-acc-lbl,.sl-acc .sl-acc-name,
+  .sl-acc .sl-acc-num,.sl-acc .sl-acc-bal,
+  .sl-foot,.sl-nav-label,.logo-sub{display:none!important}
+  .sl-logo{display:flex!important;padding:14px 10px;justify-content:center}
+  .logo-sub{display:none!important}
+  .logo-mark{font-size:14px!important;letter-spacing:2px}
+  .sl-logo>div:first-child{display:flex!important}
+  .sl-logo>div:last-child{display:none!important}
+
+  /* Nav items: icon only, centered, tooltip on hover */
+  .ni{width:40px!important;height:40px!important;border-radius:10px;margin:3px auto;display:flex;align-items:center;justify-content:center;font-size:0;padding:0!important;position:relative}
+  .ni .ni-ic{font-size:18px!important}
+  .ni::after{content:attr(data-label);position:absolute;left:52px;top:50%;transform:translateY(-50%);background:#1e293b;color:#fff;font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s;z-index:500;font-size:11px}
+  .ni:hover::after{opacity:1}
+
+  /* Accounts: just dots */
+  .sl-acc{padding:6px!important;margin:2px 6px}
+  .sl-acc-dot{width:28px;height:28px;border-radius:8px;margin:0 auto;display:flex!important}
+  .sl-acc-info,.sl-acc-bal{display:none!important}
+
+  /* Main content: slightly narrower margin */
+  .main{margin-left:var(--sw)!important;padding:16px 18px 24px}
+
+  /* Grids: 3 columns max instead of 5 */
+  .sg{grid-template-columns:repeat(3,1fr)!important}
+  .cat-cards-grid{grid-template-columns:repeat(3,1fr)!important}
+}
+
+/* ─── FOLDABLE SCREEN-SPANNING (when fold line is visible) ─── */
+@media(screen-spanning:single-fold-vertical){
+  #app{display:flex;flex-direction:row}
+  .sidebar{position:relative;width:240px}
+  .main{flex:1;padding:16px}
+}
+
+/* ─── DESKTOP 1024px+ ─── */
+@media(min-width:1024px){
+  :root{--sw:240px}
+}
+
 </style>
 <!-- Google Identity Services -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -576,10 +623,10 @@ body{background:var(--bg);color:var(--tx);font-family:'Plus Jakarta Sans',sans-s
     <div class="sl-accounts" id="sl-accounts"></div>
     <nav class="sl-nav">
       <button class="ni on" onclick="sw('dashboard')"><span class="ni-ic">◆</span>Dashboard</button>
-      <button class="ni" onclick="sw('transactions')"><span class="ni-ic">≡</span>Transactions</button>
-      <button class="ni" onclick="sw('forecast')"><span class="ni-ic">◈</span>Forecast</button>
-      <button class="ni" onclick="sw('goals')"><span class="ni-ic">◎</span>Goals</button>
-      <button class="ni" onclick="sw('analytics')"><span class="ni-ic">∿</span>Analytics</button>
+      <button class="ni" data-label="Transactions" onclick="sw('transactions')"><span class="ni-ic">≡</span>Transactions</button>
+      <button class="ni" data-label="Forecast" onclick="sw('forecast')"><span class="ni-ic">◈</span>Forecast</button>
+      <button class="ni" data-label="Goals" onclick="sw('goals')"><span class="ni-ic">◎</span>Goals</button>
+      <button class="ni" data-label="Analytics" onclick="sw('analytics')"><span class="ni-ic">∿</span>Analytics</button>
     </nav>
     <div class="sl-foot">
       <div id="google-auth-section" style="margin-bottom:8px"></div>
@@ -5003,6 +5050,48 @@ function overrideTransferType(txId,newType){
 
 
 // ─── MOBILE RESPONSIVE ──────────────────────────────────────────────
+// Debounced resize handler — re-renders current tab and updates nav state
+var _resizeTimer=null;
+function handleResize(){
+  clearTimeout(_resizeTimer);
+  _resizeTimer=setTimeout(function(){
+    var w=window.innerWidth;
+    var sidebar=document.querySelector('.sidebar');
+    var overlay=document.getElementById('sidebar-overlay');
+    var mobileHeader=document.querySelector('.mobile-header');
+    var mobileNav=document.getElementById('mobile-nav');
+
+    if(w>=640){
+      // Switching to tablet/desktop — ensure sidebar is shown, overlays hidden
+      if(sidebar){sidebar.classList.remove('mobile-open');sidebar.style.transform='';}
+      if(overlay)overlay.classList.remove('open');
+      if(mobileHeader)mobileHeader.style.display='none';
+      if(mobileNav)mobileNav.style.display='none';
+    } else {
+      // Switching to mobile — ensure mobile UI is shown
+      if(mobileHeader)mobileHeader.style.display='flex';
+      if(mobileNav)mobileNav.style.display='flex';
+    }
+
+    // Re-render current tab to apply new grid/layout
+    try{
+      if(S.activeTab==='dashboard')rDash();
+      else if(S.activeTab==='transactions')rTx();
+      else if(S.activeTab==='forecast')rFore();
+      else if(S.activeTab==='goals')rGoals();
+      else if(S.activeTab==='analytics')rAna();
+    }catch(e){}
+    updMobileNav(S.activeTab);
+  },200);
+}
+
+window.addEventListener('resize',handleResize);
+window.addEventListener('orientationchange',function(){setTimeout(handleResize,300);});
+
+function isMobile(){return window.innerWidth<640;}
+function isTablet(){return window.innerWidth>=640&&window.innerWidth<1024;}
+function isDesktop(){return window.innerWidth>=1024;}
+
 function toggleMobileSidebar(){
   var sidebar=document.querySelector('.sidebar');
   var overlay=document.getElementById('sidebar-overlay');
@@ -5024,7 +5113,6 @@ function updMobileNav(tab){
   if(btn)btn.classList.add('on');
 }
 
-function isMobile(){return window.innerWidth<640;}
 
 window.addEventListener('DOMContentLoaded',()=>{if(load()){document.getElementById('setup').style.display='none';document.getElementById('app').style.display='flex';updSidebar();sw('dashboard');setTimeout(function(){initGoogleAuth();updGoogleUI();setTimeout(function(){if(S._gcalSettings&&S._gcalSettings.enabled)gcalSyncAll(true);},2000);},800);}});
 </script>
