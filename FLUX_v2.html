@@ -438,6 +438,90 @@ body{background:var(--bg);color:var(--tx);font-family:'Plus Jakarta Sans',sans-s
 .cat-drill{border:1.5px solid var(--pri);border-radius:12px;overflow:hidden;margin-bottom:14px;animation:slideDown .2s ease}
 .cat-drill-hdr{padding:12px 16px;background:var(--prd);display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--bd)}
 .cat-drill-body{max-height:380px;overflow-y:auto}
+
+/* ═══════════════════════════════════════════════
+   RESPONSIVE — MOBILE & DESKTOP
+═══════════════════════════════════════════════ */
+
+/* Mobile bottom nav */
+.mobile-nav{display:none;position:fixed;bottom:0;left:0;right:0;height:62px;background:var(--sf);border-top:1.5px solid var(--bd);z-index:200;padding:0 4px;align-items:stretch}
+.mn-btn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border:none;background:none;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;font-size:9.5px;font-weight:600;color:var(--tx3);padding:6px 2px;border-radius:10px;transition:color .15s}
+.mn-btn.on{color:var(--pri)}
+.mn-btn .mn-ic{font-size:20px;line-height:1}
+
+/* Mobile header */
+.mobile-header{display:none;position:sticky;top:0;z-index:150;background:var(--sf);border-bottom:1px solid var(--bd);padding:10px 14px;align-items:center;gap:10px}
+.mobile-header .logo-mark{font-size:16px}
+.mobile-header .logo-sub{font-size:8px}
+.mhdr-menu{width:38px;height:38px;border-radius:10px;border:1.5px solid var(--bd);background:var(--s2);cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+
+/* Sidebar overlay for mobile */
+.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:299;backdrop-filter:blur(2px)}
+.sidebar-overlay.open{display:block}
+.sidebar.mobile-open{transform:translateX(0)!important}
+
+@media(max-width:639px){
+  /* Show mobile elements */
+  .mobile-nav{display:flex}
+  .mobile-header{display:flex}
+
+  /* Hide desktop sidebar nav items (they're in bottom nav now) */
+  .sl-nav{display:none}
+
+  /* Sidebar slides in from left as overlay */
+  .sidebar{transform:translateX(-100%);transition:transform .25s ease;z-index:300;top:0;bottom:0;overflow-y:auto}
+
+  /* Main content full width, no left margin, bottom padding for nav */
+  .main{margin-left:0!important;padding:12px 14px 80px;min-height:calc(100vh - 62px)}
+
+  /* Stat grid: 2 columns on mobile */
+  .sg{grid-template-columns:1fr 1fr!important}
+
+  /* Category cards: 2 columns */
+  .cat-cards-grid{grid-template-columns:1fr 1fr!important}
+  .cat-card-all{grid-column:span 1!important}
+
+  /* Charts: full width */
+  .cg2,.cg3{grid-template-columns:1fr!important}
+
+  /* Period nav: compact */
+  .mf-bar{flex-wrap:wrap;gap:6px}
+
+  /* Page header: tighter */
+  .ph{flex-direction:column;align-items:flex-start;gap:8px}
+  .ph>div:last-child{align-self:stretch}
+
+  /* Forecast stat cards: scroll horizontally */
+  .fc-cards{overflow-x:auto;-webkit-overflow-scrolling:touch;flex-wrap:nowrap!important;padding-bottom:4px}
+  .fc-cards .sc{min-width:140px;flex-shrink:0}
+
+  /* Transaction rows: slightly more padding for touch */
+  .ti{padding:12px 10px!important;min-height:56px}
+
+  /* Ask FLUX: full height on mobile */
+  .ask-panel{height:100vh!important;border-radius:0!important;border-left:none!important;border-right:none!important}
+
+  /* Settings cog panel: max height scroll */
+  #settings-cog-panel{max-height:60vh;overflow-y:auto}
+
+  /* Modal: full screen on mobile */
+  .mo-inner{width:100%!important;max-width:100%!important;border-radius:16px 16px 0 0!important;max-height:92vh;overflow-y:auto;margin-bottom:0}
+  .mo-wrap{align-items:flex-end!important}
+
+  /* Dash panel: max height */
+  .dash-panel-body{max-height:320px}
+
+  /* Hide some desktop-only elements */
+  .desktop-only{display:none!important}
+}
+
+@media(min-width:640px){
+  .mobile-nav{display:none!important}
+  .mobile-header{display:none!important}
+  .sidebar-overlay{display:none!important}
+  .sidebar{transform:translateX(0)!important}
+  .mobile-only{display:none!important}
+}
 </style>
 <!-- Google Identity Services -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -470,7 +554,22 @@ body{background:var(--bg);color:var(--tx);font-family:'Plus Jakarta Sans',sans-s
 </div>
 
 <div id="app" style="display:none">
+  <!-- Mobile header -->
+  <div class="mobile-header">
+    <button class="mhdr-menu" onclick="toggleMobileSidebar()" aria-label="Menu">☰</button>
+    <div class="sl-logo" style="border:none;padding:0;flex:1">
+      <div class="logo-icon">F</div>
+      <div><div class="logo-mark">FLUX</div><div class="logo-sub">Forecast · Liberty<br>Unlock · eXecute</div></div>
+    </div>
+    <button onclick="openUpdateFinancials()" class="btn btn-pri" style="padding:7px 12px;font-size:12px;flex-shrink:0">+ Update</button>
+  </div>
+  <!-- Sidebar overlay backdrop -->
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleMobileSidebar()"></div>
   <aside class="sidebar">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px 0;display:none" class="mobile-only" id="sidebar-close-row">
+      <span style="font-size:11px;font-weight:700;color:var(--tx3)">MENU</span>
+      <button onclick="toggleMobileSidebar()" style="width:30px;height:30px;border:none;background:none;cursor:pointer;font-size:18px;color:var(--tx3)">✕</button>
+    </div>
     <div class="sl-logo">
       <div><div class="logo-mark" title="Forecast · Liberty · Unlock · eXecute">FLUX</div><div class="logo-sub" style="font-size:8.5px;letter-spacing:.3px;color:var(--tx3);line-height:1.3">Forecast · Liberty<br>Unlock · eXecute</div></div>
     </div>
@@ -1782,6 +1881,15 @@ function sw(tab){
     else if(tab==='goals'&&t.startsWith('goal'))n.classList.add('on');
     else if(tab==='analytics'&&t.startsWith('anal'))n.classList.add('on');
   });
+  // Sync mobile bottom nav
+  updMobileNav(tab);
+  // Close mobile sidebar if open
+  if(isMobile()){
+    var sb=document.querySelector('.sidebar');
+    var ov=document.getElementById('sidebar-overlay');
+    if(sb)sb.classList.remove('mobile-open');
+    if(ov)ov.classList.remove('open');
+  }
   // Always re-render the tab being switched to
   if(tab==='dashboard')rDash();
   else if(tab==='transactions')rTx();
@@ -2560,7 +2668,7 @@ function rFore(){
     :'<div style="font-size:11.5px;color:var(--tx3);margin-top:8px;text-align:center">↓ Click any day</div>';
 
   panel.innerHTML='<div class="ph"><div><div class="pt">Forecast</div><div class="ps">Calendar view — click any day to see details</div></div>'+globalActions()+'</div>'
-  +'<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px">'
+  +'<div class="fc-cards" style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px">'
   +'<div class="sc" style="--ac:var(--grn)"><div class="sl">Month Income</div><div class="sv" style="color:var(--grn);font-size:18px">'+fmo(moInc)+'</div></div>'
   +'<div class="sc" style="--ac:var(--red)"><div class="sl">Month Expenses</div><div class="sv" style="color:var(--red);font-size:18px">'+fmo(moExp)+'</div></div>'
   +'<div class="sc" style="--ac:#d97706"><div class="sl">Expenses To Date</div><div class="sv" style="color:#d97706;font-size:18px">'+fmo(expToDate)+'</div><div class="sn nt">Since '+new Date(foreYear,foreMonth,1).toLocaleDateString('en-US',{month:'short',day:'numeric'})+'</div></div>'
@@ -4892,6 +5000,31 @@ function overrideTransferType(txId,newType){
   document.getElementById('transfer-audit-modal').remove();
   openTransferAudit();
 }
+
+
+// ─── MOBILE RESPONSIVE ──────────────────────────────────────────────
+function toggleMobileSidebar(){
+  var sidebar=document.querySelector('.sidebar');
+  var overlay=document.getElementById('sidebar-overlay');
+  var closeRow=document.getElementById('sidebar-close-row');
+  var isOpen=sidebar.classList.contains('mobile-open');
+  if(isOpen){
+    sidebar.classList.remove('mobile-open');
+    if(overlay)overlay.classList.remove('open');
+  } else {
+    sidebar.classList.add('mobile-open');
+    if(overlay)overlay.classList.add('open');
+    if(closeRow)closeRow.style.display='flex';
+  }
+}
+
+function updMobileNav(tab){
+  document.querySelectorAll('.mn-btn').forEach(function(b){b.classList.remove('on');});
+  var btn=document.getElementById('mn-'+tab);
+  if(btn)btn.classList.add('on');
+}
+
+function isMobile(){return window.innerWidth<640;}
 
 window.addEventListener('DOMContentLoaded',()=>{if(load()){document.getElementById('setup').style.display='none';document.getElementById('app').style.display='flex';updSidebar();sw('dashboard');setTimeout(function(){initGoogleAuth();updGoogleUI();setTimeout(function(){if(S._gcalSettings&&S._gcalSettings.enabled)gcalSyncAll(true);},2000);},800);}});
 </script>
