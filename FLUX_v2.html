@@ -1120,9 +1120,38 @@ function parseAnyDate(s){
 function detectRecurring(txs){
   const norm=s=>s.toLowerCase().replace(/[#\d]+/g,'#').replace(/\s+/g,' ').trim().substring(0,30);
   const groups={};
-  txs.forEach(tx=>{const k=norm(tx.description);if(!groups[k])groups[k]=[];groups[k].push(tx)});
+  txs.forEach(tx=>{const k=norm(tx.description||'');if(!groups[k])groups[k]=[];groups[k].push(tx)});
   const recKeys=new Set();
-  Object.entries(groups).forEach(([k,arr])=>{if(arr.length>=2)recKeys.add(k)});
+
+  Object.entries(groups).forEach(([k,arr])=>{
+    // Need at least 3 occurrences to reliably detect a pattern
+    if(arr.length<3)return;
+
+    // Amount consistency check — all amounts must be within ±25% of the median
+    const amounts=arr.map(t=>Math.abs(t.amount)).sort((a,b)=>a-b);
+    const med=amounts[Math.floor(amounts.length/2)];
+    if(med===0)return;
+    const amtConsistent=amounts.every(a=>Math.abs(a-med)/med<0.25);
+    if(!amtConsistent)return;
+
+    // Interval consistency check — gaps between dates must follow a regular pattern
+    const sorted=arr.slice().sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const intervals=[];
+    for(let i=1;i<sorted.length;i++){
+      const gap=(new Date(sorted[i].date+'T12:00:00')-new Date(sorted[i-1].date+'T12:00:00'))/86400000;
+      intervals.push(gap);
+    }
+    const avgGap=intervals.reduce((s,x)=>s+x,0)/intervals.length;
+
+    // Must fit a plausible billing cycle (5 days to 13 months)
+    if(avgGap<5||avgGap>400)return;
+
+    // Coefficient of variation — stdDev/mean. Low = consistent. >0.4 = too random
+    const variance=intervals.reduce((s,x)=>s+Math.pow(x-avgGap,2),0)/intervals.length;
+    const cv=Math.sqrt(variance)/avgGap;
+    if(cv<0.40)recKeys.add(k);
+  });
+
   return recKeys;
 }
 
@@ -1591,7 +1620,8 @@ function csvRecurringRules(){
   });
   var result=[];
   Object.values(groups).forEach(function(txs){
-    // Sort oldest-first to detect spacing, use latest as the projection base
+    // Only project if there are 3+ occurrences (same threshold as detectRecurring)
+    if(txs.length<3)return;
     var sorted=txs.slice().sort(function(a,b){return new Date(a.date)-new Date(b.date)});
     var freq=detectFreq(sorted.map(function(t){return t.date}));
     var latest=sorted[sorted.length-1];
