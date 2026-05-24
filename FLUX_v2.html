@@ -930,7 +930,7 @@ function categorizeTx(desc){
   // Check learned rules first (user-taught mappings)
   if(S.learnedRules){
     var key=normalizeDesc(desc).substring(0,28).toUpperCase();
-    if(S.learnedRules[key])return{cat:S.learnedRules[key],isBill:true,isRec:true,isInc:false};
+    if(S.learnedRules[key])return{cat:S.learnedRules[key],isBill:false,isRec:false,isInc:false};
   }
   for(const r of CAT_RULES)if(r.re.test(d))return r;
   return{cat:'Other',isBill:false,isRec:false,isInc:false};
@@ -1263,39 +1263,51 @@ function parseAnyDate(s){
   return null;
 }
 
+// Option A: Only these categories can be auto-detected as recurring
+var RECURRING_CATS=new Set(['Subscriptions','Utilities','Insurance','Housing','Debt','Debt Payment','Fitness','Healthcare','Education','Internet','Phone','Streaming','Rent','Mortgage']);
+
 function detectRecurring(txs){
   const norm=s=>s.toLowerCase().replace(/[#\d]+/g,'#').replace(/\s+/g,' ').trim().substring(0,30);
   const groups={};
-  txs.forEach(tx=>{const k=norm(tx.description||'');if(!groups[k])groups[k]=[];groups[k].push(tx)});
+  txs.forEach(function(tx){
+    // Option A: Skip categories that are never truly recurring
+    var cat=tx.category||'Other';
+    if(!RECURRING_CATS.has(cat))return;
+    // Skip _neverRecurring transactions
+    if(tx._neverRecurring)return;
+    var k=norm(tx.description||'');
+    if(!groups[k])groups[k]=[];
+    groups[k].push(tx);
+  });
+
   const recKeys=new Set();
+  Object.entries(groups).forEach(function(entry){
+    var k=entry[0],arr=entry[1];
 
-  Object.entries(groups).forEach(([k,arr])=>{
-    // Need at least 3 occurrences to reliably detect a pattern
-    if(arr.length<3)return;
+    // Option B: Need 4+ occurrences
+    if(arr.length<4)return;
 
-    // Amount consistency check — all amounts must be within ±25% of the median
-    const amounts=arr.map(t=>Math.abs(t.amount)).sort((a,b)=>a-b);
-    const med=amounts[Math.floor(amounts.length/2)];
+    // Option B: Amount consistency ±15% of median
+    var amounts=arr.map(function(t){return Math.abs(t.amount);}).sort(function(a,b){return a-b;});
+    var med=amounts[Math.floor(amounts.length/2)];
     if(med===0)return;
-    const amtConsistent=amounts.every(a=>Math.abs(a-med)/med<0.25);
-    if(!amtConsistent)return;
+    if(!amounts.every(function(a){return Math.abs(a-med)/med<0.15;}))return;
 
-    // Interval consistency check — gaps between dates must follow a regular pattern
-    const sorted=arr.slice().sort((a,b)=>new Date(a.date)-new Date(b.date));
-    const intervals=[];
-    for(let i=1;i<sorted.length;i++){
-      const gap=(new Date(sorted[i].date+'T12:00:00')-new Date(sorted[i-1].date+'T12:00:00'))/86400000;
-      intervals.push(gap);
+    // Option B: Must span at least 60 days
+    var sorted=arr.slice().sort(function(a,b){return new Date(a.date)-new Date(b.date);});
+    var span=(new Date(sorted[sorted.length-1].date+'T12:00:00')-new Date(sorted[0].date+'T12:00:00'))/86400000;
+    if(span<60)return;
+
+    // Option B: Interval consistency — CV < 0.25
+    var intervals=[];
+    for(var i=1;i<sorted.length;i++){
+      intervals.push((new Date(sorted[i].date+'T12:00:00')-new Date(sorted[i-1].date+'T12:00:00'))/86400000);
     }
-    const avgGap=intervals.reduce((s,x)=>s+x,0)/intervals.length;
-
-    // Must fit a plausible billing cycle (5 days to 13 months)
+    var avgGap=intervals.reduce(function(s,x){return s+x;},0)/intervals.length;
     if(avgGap<5||avgGap>400)return;
-
-    // Coefficient of variation — stdDev/mean. Low = consistent. >0.4 = too random
-    const variance=intervals.reduce((s,x)=>s+Math.pow(x-avgGap,2),0)/intervals.length;
-    const cv=Math.sqrt(variance)/avgGap;
-    if(cv<0.40)recKeys.add(k);
+    var variance=intervals.reduce(function(s,x){return s+Math.pow(x-avgGap,2);},0)/intervals.length;
+    var cv=Math.sqrt(variance)/avgGap;
+    if(cv<0.25)recKeys.add(k);
   });
 
   return recKeys;
@@ -1766,8 +1778,11 @@ function csvRecurringRules(){
   });
   var result=[];
   Object.values(groups).forEach(function(txs){
-    // Only project if there are 3+ occurrences (same threshold as detectRecurring)
-    if(txs.length<3)return;
+    // Only project if there are 4+ occurrences and all confirmed recurring
+    if(txs.length<4)return;
+    // Don't project _recurSuggested — only project confirmed isRecurring
+    var confirmed=txs.filter(function(t){return t.isRecurring||t.recurring;});
+    if(confirmed.length<4)return;
     var sorted=txs.slice().sort(function(a,b){return new Date(a.date)-new Date(b.date)});
     var freq=detectFreq(sorted.map(function(t){return t.date}));
     var latest=sorted[sorted.length-1];
@@ -3551,21 +3566,27 @@ function appendCSV(){
   var dupeCount=window._pendingCSV.length-toAdd.length;
   S.csvTxs=[...S.csvTxs,...toAdd];
   clearGroupsCache();rebuildAccounts();
+  // Apply recurring suggestions after import
+  var suggested=applySuggestedRecurring();
   jumpToMostRecentMonth();
   try{save();}catch(e){}
   closeMo();updSidebar();sw(S.activeTab);
   if(newAccts.length)setTimeout(function(){openAccountSettings();},400);
-  if(dupeCount>0)showStorageWarning('Import complete — '+toAdd.length+' new transactions added. '+dupeCount+' duplicates skipped.');
+  var msg='Import complete — '+toAdd.length+' new transactions added.'+(dupeCount>0?' '+dupeCount+' duplicates skipped.':'');
+  if(suggested>0)msg+=' <a href="#" onclick="openRecurringReview()" style="color:#2563eb;font-weight:700">↻ Review '+suggested+' suggested recurring charges →</a>';
+  if(toAdd.length>0||dupeCount>0||suggested>0)showStorageWarning(msg);
 }
 function replaceCSV(){
   if(!window._pendingCSV)return;
   var newAccts=detectAndRegisterNewAccounts(window._pendingCSV);
   S.csvTxs=window._pendingCSV;
   clearGroupsCache();rebuildAccounts();
+  var suggested2=applySuggestedRecurring();
   jumpToMostRecentMonth();
   try{save();}catch(e){}
   closeMo();updSidebar();sw(S.activeTab);
   if(newAccts.length)setTimeout(function(){openAccountSettings();},400);
+  if(suggested2>0)showStorageWarning('Import complete. <a href="#" onclick="openRecurringReview()" style="color:#2563eb;font-weight:700">↻ Review '+suggested2+' suggested recurring charges →</a>');
 }
 
 function jumpToMostRecentMonth(){
@@ -5114,7 +5135,159 @@ function updMobileNav(tab){
 }
 
 
+
+// ════════════════════════════════════════════════════════════════
+// RECURRING REVIEW ENGINE (Option C)
+// ════════════════════════════════════════════════════════════════
+
+function applySuggestedRecurring(){
+  // Run the strict detector across all CSV transactions
+  var recKeys=detectRecurring(S.csvTxs);
+  var norm=function(s){return s.toLowerCase().replace(/[#\d]+/g,'#').replace(/\s+/g,' ').trim().substring(0,30);};
+  var count=0;
+  S.csvTxs.forEach(function(tx){
+    var k=norm(tx.description||'');
+    if(recKeys.has(k)){
+      // Only suggest if user hasn't confirmed or rejected
+      if(!tx._neverRecurring&&!tx.isRecurring&&!tx.recurring){
+        tx._recurSuggested=true;
+        count++;
+      }
+    } else {
+      // Clear stale suggestions that no longer qualify
+      if(tx._recurSuggested&&!tx.isRecurring)tx._recurSuggested=false;
+    }
+  });
+  return count;
+}
+
+function getRecurringSuggestions(){
+  var norm=function(s){return s.toLowerCase().replace(/[#\d]+/g,'#').replace(/\s+/g,' ').trim().substring(0,30);};
+  var groups={};
+  S.csvTxs.filter(function(tx){return tx._recurSuggested;}).forEach(function(tx){
+    var k=norm(tx.description||'');
+    if(!groups[k])groups[k]={key:k,txs:[],name:tx.description,category:tx.category,amount:Math.abs(tx.amount)};
+    groups[k].txs.push(tx);
+  });
+  return Object.values(groups).sort(function(a,b){return b.txs.length-a.txs.length;});
+}
+
+function approveRecurring(key){
+  var norm=function(s){return s.toLowerCase().replace(/[#\d]+/g,'#').replace(/\s+/g,' ').trim().substring(0,30);};
+  var freq=detectFreq(S.csvTxs.filter(function(tx){return norm(tx.description||'')===key;}).map(function(t){return t.date;}));
+  S.csvTxs.forEach(function(tx){
+    if(norm(tx.description||'')===key){
+      tx.isRecurring=true;tx.recurring=true;tx._recurSuggested=false;tx.frequency=freq;
+    }
+  });
+  try{save();}catch(e){}
+  openRecurringReview();
+}
+
+function rejectRecurring(key){
+  var norm=function(s){return s.toLowerCase().replace(/[#\d]+/g,'#').replace(/\s+/g,' ').trim().substring(0,30);};
+  S.csvTxs.forEach(function(tx){
+    if(norm(tx.description||'')===key){
+      tx._neverRecurring=true;tx._recurSuggested=false;tx.isRecurring=false;tx.recurring=false;
+    }
+  });
+  try{save();}catch(e){}
+  openRecurringReview();
+}
+
+function approveAllRecurring(){
+  getRecurringSuggestions().forEach(function(g){approveRecurring(g.key);});
+}
+
+function rejectAllRecurring(){
+  getRecurringSuggestions().forEach(function(g){rejectRecurring(g.key);});
+}
+
+function openRecurringReview(){
+  var groups=getRecurringSuggestions();
+  var existing=document.getElementById('recurring-review-modal');
+  if(existing)existing.remove();
+
+  if(!groups.length){
+    showStorageWarning('✅ No pending recurring charge suggestions.');
+    if(S.activeTab==='transactions')rTx();
+    return;
+  }
+
+  var norm=function(s){return s.toLowerCase().replace(/[#\d]+/g,'#').replace(/\s+/g,' ').trim().substring(0,30);};
+  var rows=groups.map(function(g){
+    var txs=g.txs.slice().sort(function(a,b){return new Date(a.date)-new Date(b.date);});
+    var amounts=txs.map(function(t){return Math.abs(t.amount);});
+    var avgAmt=amounts.reduce(function(s,v){return s+v;},0)/amounts.length;
+    var freq=detectFreq(txs.map(function(t){return t.date;}));
+    var firstDate=txs[0].date;var lastDate=txs[txs.length-1].date;
+    var safeName=g.name.substring(0,42);
+    var safeKey=g.key.replace(/'/g,"\\'");
+    return '<tr style="border-bottom:1px solid var(--bd)">'
+      +'<td style="padding:10px 12px">'
+        +'<div style="font-size:13px;font-weight:700;color:var(--tx)">'+safeName+'</div>'
+        +'<div style="font-size:10.5px;color:var(--tx3);margin-top:2px">'+g.category+' · '+fd(firstDate)+' → '+fd(lastDate)+'</div>'
+      +'</td>'
+      +'<td style="padding:10px 12px;font-family:JetBrains Mono,monospace;font-size:13px;font-weight:700;color:var(--tx)">'+fmo(avgAmt)+'</td>'
+      +'<td style="padding:10px 12px;font-size:12px;color:var(--pri);font-weight:600">'+freq+'</td>'
+      +'<td style="padding:10px 12px;font-size:12px;color:var(--tx3)">'+txs.length+'×</td>'
+      +'<td style="padding:10px 8px">'
+        +'<div style="display:flex;gap:6px">'
+          +'<button onclick="approveRecurring(\''+safeKey+'\')" style="padding:6px 12px;border:none;border-radius:7px;background:#16a34a;color:#fff;font-size:11.5px;font-weight:700;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif">✅ Recurring</button>'
+          +'<button onclick="rejectRecurring(\''+safeKey+'\')" style="padding:6px 12px;border:1.5px solid #fecaca;border-radius:7px;background:#fef2f2;color:#dc2626;font-size:11.5px;font-weight:700;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif">❌ Not recurring</button>'
+        +'</div>'
+      +'</td>'
+      +'</tr>';
+  }).join('');
+
+  var html='<div id="recurring-review-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px">'
+    +'<div style="background:var(--bg);border-radius:16px;width:820px;max-width:100%;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.2)">'
+    +'<div style="padding:16px 20px;border-bottom:1px solid var(--bd);display:flex;align-items:flex-start;justify-content:space-between">'
+      +'<div>'
+        +'<div style="font-size:15px;font-weight:800;color:var(--tx)">↻ Review Recurring Charge Suggestions</div>'
+        +'<div style="font-size:11.5px;color:var(--tx3);margin-top:3px">'+groups.length+' patterns detected · Confirm or dismiss each one. Dismissed charges are never suggested again.</div>'
+      +'</div>'
+      +'<button onclick="document.getElementById(\'recurring-review-modal\').remove()" style="width:30px;height:30px;border:none;background:none;cursor:pointer;font-size:18px;color:var(--tx3);flex-shrink:0">✕</button>'
+    +'</div>'
+    +'<div style="padding:10px 16px;background:#f0fdf4;border-bottom:1px solid #bbf7d0;font-size:11.5px;color:#166534">'
+      +'💡 <strong>How it works:</strong> FLUX requires 4+ occurrences, consistent amounts (±15%), and regular intervals spanning 60+ days before suggesting a pattern as recurring. Only bill-type categories qualify.'
+    +'</div>'
+    +'<div style="overflow-y:auto;flex:1">'
+      +'<table style="width:100%;border-collapse:collapse">'
+      +'<thead style="position:sticky;top:0;background:var(--sf);z-index:1">'
+        +'<tr style="border-bottom:2px solid var(--bd)">'
+          +'<th style="padding:9px 12px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Merchant / Description</th>'
+          +'<th style="padding:9px 12px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Avg Amount</th>'
+          +'<th style="padding:9px 12px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Frequency</th>'
+          +'<th style="padding:9px 12px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Count</th>'
+          +'<th style="padding:9px 12px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Decision</th>'
+        +'</tr>'
+      +'</thead>'
+      +'<tbody>'+rows+'</tbody>'
+      +'</table>'
+    +'</div>'
+    +'<div style="padding:12px 20px;border-top:1px solid var(--bd);display:flex;gap:8px;justify-content:space-between;align-items:center">'
+      +'<div style="font-size:11px;color:var(--tx3)">You can access this review anytime from the ↻ Recurring filter in Transactions.</div>'
+      +'<div style="display:flex;gap:8px">'
+        +'<button onclick="approveAllRecurring()" style="padding:8px 16px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-size:12.5px;font-weight:700;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif">✅ Approve All</button>'
+        +'<button onclick="rejectAllRecurring()" style="padding:8px 16px;border:1.5px solid #fecaca;border-radius:8px;background:#fef2f2;color:#dc2626;font-size:12.5px;font-weight:700;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif">❌ Reject All</button>'
+        +'<button onclick="document.getElementById(\'recurring-review-modal\').remove()" style="padding:8px 16px;border:1.5px solid var(--bd);border-radius:8px;background:var(--sf);font-size:12.5px;font-weight:600;cursor:pointer;color:var(--tx2);font-family:Plus Jakarta Sans,sans-serif">Later</button>'
+      +'</div>'
+    +'</div>'
+    +'</div></div>';
+
+  document.body.insertAdjacentHTML('beforeend',html);
+}
+
 window.addEventListener('DOMContentLoaded',()=>{if(load()){document.getElementById('setup').style.display='none';document.getElementById('app').style.display='flex';updSidebar();sw('dashboard');setTimeout(function(){initGoogleAuth();updGoogleUI();setTimeout(function(){if(S._gcalSettings&&S._gcalSettings.enabled)gcalSyncAll(true);},2000);},800);}});
 </script>
+  <!-- Mobile bottom navigation -->
+  <nav id="mobile-nav" class="mobile-nav">
+    <button class="mn-btn on" id="mn-dashboard" onclick="sw('dashboard')"><span class="mn-ic">🏠</span>Dashboard</button>
+    <button class="mn-btn" id="mn-transactions" onclick="sw('transactions')"><span class="mn-ic">≡</span>Txns</button>
+    <button class="mn-btn" id="mn-forecast" onclick="sw('forecast')"><span class="mn-ic">📅</span>Forecast</button>
+    <button class="mn-btn" id="mn-goals" onclick="sw('goals')"><span class="mn-ic">🎯</span>Goals</button>
+    <button class="mn-btn" id="mn-analytics" onclick="sw('analytics')"><span class="mn-ic">📊</span>Analytics</button>
+  </nav>
 </body>
 </html>
