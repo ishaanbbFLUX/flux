@@ -785,7 +785,11 @@ function detectAndRegisterNewAccounts(txs){
   var newOnes=[];
   txs.forEach(function(tx){
     if(!tx.account)return;
-    if(ACCOUNTS[tx.account]||S.accountMeta[tx.account])return;
+    // If account exists but was hidden, un-hide it — data is back so it should show
+    if(S.accountMeta[tx.account]&&S.accountMeta[tx.account].hidden){
+      S.accountMeta[tx.account].hidden=false;
+    }
+    if(ACCOUNTS[tx.account]||(S.accountMeta[tx.account]&&!S.accountMeta[tx.account].hidden))return;
     var idx=Object.keys(S.accountMeta).length%ACC_COLORS.length;
     S.accountMeta[tx.account]={
       name:'Account ••••'+String(tx.account).slice(-4),
@@ -829,9 +833,19 @@ function openAccountSettings(){
     +'<input id="aname-'+num+'" value="'+info.name+'" style="width:100%;padding:5px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12.5px;font-family:Plus Jakarta Sans,sans-serif;color:#0f172a;background:#fff">'
     +'<div style="font-size:10.5px;color:#94a3b8;margin-top:2px">••••'+num+(bal!==null?' · '+fmo(bal):'')+'</div>'
     +'</div>'
-    +'<select id="atype-'+num+'" style="padding:5px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px;font-family:Plus Jakarta Sans,sans-serif">'
-    +['checking','savings','credit','investment','other'].map(function(t){return'<option value="'+t+'"'+(info.type===t?' selected':'')+'>'+t.charAt(0).toUpperCase()+t.slice(1)+'</option>';}).join('')
+    +'<div style="display:flex;flex-direction:column;gap:4px">'
+    +'<select id="atype-'+num+'" data-acctnum="'+num+'" onchange="toggleAccCreditLimit(this.dataset.acctnum)" style="padding:5px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px;font-family:Plus Jakarta Sans,sans-serif">'
+    +['checking','savings','credit card','investment','other'].map(function(t){
+      var label=t==='credit card'?'Credit Card':t.charAt(0).toUpperCase()+t.slice(1);
+      var selected=(info.type===t||( t==='credit card'&&(info.type==='credit'||info.type==='credit card')))?'selected':'';
+      return'<option value="'+t+'" '+selected+'>'+label+'</option>';
+    }).join('')
     +'</select>'
+    +'<div id="alimit-wrap-'+num+'" style="display:'+(info.type==='credit'||info.type==='credit card'?'block':'none')+'">'
+    +'<input id="alimit-'+num+'" type="number" placeholder="Credit limit e.g. 5000" value="'+(info.creditLimit||'')+'" '
+    +'style="width:100%;padding:5px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px;font-family:Plus Jakarta Sans,sans-serif">'
+    +'</div>'
+    +'</div>'
     +'<button onclick="deleteAccount(\''+num+'\')" title="Remove account" style="width:28px;height:28px;border-radius:6px;border:1px solid #fecaca;background:#fef2f2;color:#dc2626;font-size:14px;cursor:pointer;font-weight:700;flex-shrink:0;display:flex;align-items:center;justify-content:center;line-height:1">✕</button>'
     +'</div>';
   }).join('');
@@ -862,14 +876,24 @@ function deleteAccount(num){
   updSidebar();
 }
 
+function toggleAccCreditLimit(num){
+  var sel=document.getElementById('atype-'+num);
+  var wrap=document.getElementById('alimit-wrap-'+num);
+  if(wrap)wrap.style.display=(sel&&(sel.value==='credit card'||sel.value==='credit'))?'block':'none';
+}
+
 function saveAccountSettings(){
-  var all=getAllAccounts();
+  // Iterate the same allForEdit set shown in the modal
+  var allForEdit={};
+  Object.assign(allForEdit,ACCOUNTS);
+  Object.assign(allForEdit,S.accountMeta||{});
+  S.csvTxs.forEach(function(tx){if(tx.account&&!allForEdit[tx.account])allForEdit[tx.account]=getAccountInfo(tx.account);});
   if(!S.accountMeta)S.accountMeta={};
-  Object.keys(all).forEach(function(num){
+  Object.keys(allForEdit).filter(function(k){return!allForEdit[k].hidden;}).forEach(function(num){
     var nameEl=document.getElementById('aname-'+num);
     var typeEl=document.getElementById('atype-'+num);
     var name=nameEl?nameEl.value.trim():'Account ••••'+String(num).slice(-4);
-    var type=typeEl?typeEl.value:'checking';
+    var type=typeEl?typeEl.value:'checking';if(type==='credit')type='credit card';
     var short=name.length>12?name.substring(0,12)+'…':name;
     var existing=S.accountMeta[num]||ACCOUNTS[num]||{color:ACC_COLORS[0]};
     var limitEl=document.getElementById('alimit-'+num);
@@ -880,6 +904,7 @@ function saveAccountSettings(){
   closeMo();updSidebar();sw(S.activeTab);
 }
 const CAT_COLORS={'Housing':'#3b82f6','Food & Dining':'#f97316','Transportation':'#06b6d4','Parking':'#0369a1','Entertainment':'#8b5cf6','Healthcare':'#ef4444','Utilities':'#10b981','Shopping':'#f59e0b','Subscriptions':'#f97316','Insurance':'#64748b','Education':'#22c55e','Personal Care':'#ec4899','Travel':'#0ea5e9','Fitness':'#84cc16','Groceries':'#34d399','Gas':'#38bdf8','Rideshare':'#a78bfa','Cash':'#94a3b8','Fees':'#e11d48','Transfer':'#94a3b8','Income':'#16a34a','Other':'#94a3b8','Bars':'#7c3aed','Debt':'#e11d48','Debt Payment':'#991b1b','Tithing':'#a16207'};
+const BILL_CATEGORIES=new Set(['Housing','Utilities','Insurance','Subscriptions','Healthcare','Education','Fitness','Debt','Debt Payment','Streaming','Internet','Phone','Rent','Mortgage']);
 const EXP_CATS=['Bars','Debt','Debt Payment','Education','Entertainment','Fees','Fitness','Food & Dining','Gas','Groceries','Healthcare','Housing','Insurance','Other','Parking','Personal Care','Rideshare','Shopping','Subscriptions','Tithing','Transportation','Travel','Utilities'];
 const INC_CATS=['Salary','Freelance','Investment','Rental Income','Business','Gift','Other Income'];
 const GOAL_COLS=[
@@ -1733,7 +1758,7 @@ function detectFreq(dates){
 function csvRecurringRules(){
   // Manual-only: only transactions the user explicitly marked recurring
   var groups={};
-  S.csvTxs.filter(function(tx){return(tx.isRecurring||tx.recurring)&&!isTransfer(tx);}).forEach(function(tx){
+  S.csvTxs.filter(function(tx){return(tx.isRecurring||tx.recurring)&&BILL_CATEGORIES.has(tx.category||'')&&!isTransfer(tx);}).forEach(function(tx){
     var key=(tx.description||'').toLowerCase().replace(/[^a-z0-9]/g,'').substring(0,22)+'|'+(tx.account||'');
     if(!groups[key])groups[key]=[];
     groups[key].push(tx);
@@ -1930,7 +1955,7 @@ function updSidebar(){
     Object.entries(allAcc).forEach(([num,info])=>{
       const bal=S.accounts[num]?.balance??null;
       const cnt=S.accounts[num]?.txCount??0;
-      const isCreditCard=info.type==='credit card'||info.type==='credit';
+      const isCreditCard=info.type==='credit card'||info.type==='credit'||info.type==='cc';
       const limit=info.creditLimit||0;
       const owed=isCreditCard&&bal!==null?Math.abs(bal):null;
       const util=isCreditCard&&limit>0&&owed!==null?Math.min(100,Math.round(owed/limit*100)):null;
@@ -2457,7 +2482,7 @@ function rTx(){
   var txs=[...S.csvTxs,...S.transactions].filter(function(t){var d=pd(t.date);return d>=ms&&d<=me;}).sort(function(a,b){return new Date(b.date)-new Date(a.date);});
   var allCats=[...new Set(txs.map(function(t){return t.category;}).filter(Boolean))].sort();
   if(txAccFilter!=='all')txs=txs.filter(function(t){return t.account===txAccFilter||(txAccFilter==='manual'&&!t.account);});
-  if(txFilter==='recurring'){txs=txs.filter(function(t){return t.isRecurring||t.recurring;});}
+  if(txFilter==='recurring'){txs=txs.filter(function(t){return (t.isRecurring||t.recurring)&&BILL_CATEGORIES.has(t.category||'');});}
   else if(txFilter!=='all'){txs=txs.filter(function(t){return classifyTxSimple(t)===txFilter;});}
   if(txCatFilter!=='all')txs=txs.filter(function(t){return t.category===txCatFilter;});
   if(txSearch&&txSearch.trim()){var q=txSearch.trim().toLowerCase();txs=txs.filter(function(t){return((t.name||t.description||'').toLowerCase().includes(q))||((t.category||'').toLowerCase().includes(q));});}
@@ -3032,7 +3057,7 @@ function rAna(){
   var accLabel=accFilter==='all'?'All Accounts':(getAccountInfo(accFilter).name||'Account ••••'+accFilter);
   var recTxsAna=[...S.csvTxs,...S.transactions].filter(function(t){
     var d=pd(t.date);var s=new Date(anaYear,anaMonth,1);var e=new Date(anaYear,anaMonth+1,0);
-    return d>=s&&d<=e&&(t.isRecurring||t.recurring)&&!isTransfer(t)&&!t.isIncome&&t.type!=='income'
+    return d>=s&&d<=e&&(t.isRecurring||t.recurring)&&BILL_CATEGORIES.has(t.category||'')&&!isTransfer(t)&&!t.isIncome&&t.type!=='income'
       &&(accFilter==='all'||!t.account||t.account===accFilter);
   });
   var recTotal=recTxsAna.reduce(function(s,t){return s+Math.abs(t.amount);},0);
