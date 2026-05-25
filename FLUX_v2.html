@@ -848,7 +848,9 @@ function openAccountSettings(){
     +'<input id="aname-'+num+'" value="'+info.name+'" style="width:100%;padding:5px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12.5px;font-family:Plus Jakarta Sans,sans-serif;color:#0f172a;background:#fff;margin-bottom:4px">'
     +'<div style="display:flex;align-items:center;gap:6px">'
     +'<div style="font-size:10.5px;color:#94a3b8">••••'+num+(bal!==null?' · '+fmo(bal):'')+'</div>'
-    +'<input id="aadj-'+num+'" type="number" value="'+(curAdj!==''?curAdj:'')+'" placeholder="± Balance adjustment" title="Manually adjust this account balance" '
+    +'<input id="aadj-'+num+'" type="number" value="'+(curAdj!==''?curAdj:'')+'" '
+    +'placeholder="'+(info.type==='credit card'||info.type==='credit'?'Override owed amount':'± Adjust balance')+'" '
+    +'title="'+(info.type==='credit card'||info.type==='credit'?'Set exact amount owed (overrides CSV). Leave blank to use imported balance.':'Add or subtract from imported balance (e.g. +500 or -200)')+'" '
     +'style="flex:1;padding:3px 6px;border:1px solid #e2e8f0;border-radius:5px;font-size:11px;font-family:Plus Jakarta Sans,sans-serif;color:#475569;background:#f8fafc">'
     +'</div>'
     +'</div>'
@@ -1015,6 +1017,7 @@ function saveAccountSettings(){
     S.accountMeta[num]=Object.assign({},existing,{name:name,short:short,type:type,creditLimit:creditLimit,balanceAdj:balanceAdj});
   });
   try{save();}catch(e){}
+  rebuildAccounts(); // recompute balances so sidebar reflects override immediately
   closeMo();updSidebar();sw(S.activeTab);
 }
 const CAT_COLORS={'Housing':'#3b82f6','Food & Dining':'#f97316','Transportation':'#06b6d4','Parking':'#0369a1','Entertainment':'#8b5cf6','Healthcare':'#ef4444','Utilities':'#10b981','Shopping':'#f59e0b','Subscriptions':'#f97316','Insurance':'#64748b','Education':'#22c55e','Personal Care':'#ec4899','Travel':'#0ea5e9','Fitness':'#84cc16','Groceries':'#34d399','Gas':'#38bdf8','Rideshare':'#a78bfa','Cash':'#94a3b8','Fees':'#e11d48','Transfer':'#94a3b8','Income':'#16a34a','Other':'#94a3b8','Bars':'#7c3aed','Debt':'#e11d48','Debt Payment':'#991b1b','Tithing':'#a16207'};
@@ -1803,9 +1806,20 @@ function rebuildAccounts(){
   });
 
   // Apply user-entered balance adjustments from account settings
+  // For credit cards: balanceAdj is the OVERRIDE of amount owed
+  // For other accounts: balanceAdj is additive (delta on top of CSV balance)
   Object.keys(accMap).forEach(function(acct){
     var meta=S.accountMeta&&S.accountMeta[acct];
-    if(meta&&meta.balanceAdj)accMap[acct].balance+=meta.balanceAdj;
+    if(!meta||!meta.balanceAdj)return;
+    var isCc=meta.type==='credit card'||meta.type==='credit'||meta.type==='cc';
+    if(isCc){
+      // Override: set balance to negative of the owed amount entered
+      accMap[acct].balance=-(meta.balanceAdj);
+      accMap[acct].balanceOverridden=true;
+    } else {
+      // Delta: add to existing computed balance
+      accMap[acct].balance+=meta.balanceAdj;
+    }
   });
 
   // Manual transactions with no account — adjust currentBalance directly
