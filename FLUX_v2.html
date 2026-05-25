@@ -1264,67 +1264,19 @@ function parseAnyDate(s){
 }
 
 // Option A: Only these categories can be auto-detected as recurring
-var RECURRING_CATS=new Set(['Subscriptions','Utilities','Insurance','Housing','Debt','Debt Payment','Fitness','Healthcare','Education','Internet','Phone','Streaming','Rent','Mortgage']);
 
-function detectRecurring(txs){
-  const norm=s=>s.toLowerCase().replace(/[#\d]+/g,'#').replace(/\s+/g,' ').trim().substring(0,30);
-  const groups={};
-  txs.forEach(function(tx){
-    // Option A: Skip categories that are never truly recurring
-    var cat=tx.category||'Other';
-    if(!RECURRING_CATS.has(cat))return;
-    // Skip _neverRecurring transactions
-    if(tx._neverRecurring)return;
-    var k=norm(tx.description||'');
-    if(!groups[k])groups[k]=[];
-    groups[k].push(tx);
-  });
 
-  const recKeys=new Set();
-  Object.entries(groups).forEach(function(entry){
-    var k=entry[0],arr=entry[1];
-
-    // Option B: Need 4+ occurrences
-    if(arr.length<4)return;
-
-    // Option B: Amount consistency ±15% of median
-    var amounts=arr.map(function(t){return Math.abs(t.amount);}).sort(function(a,b){return a-b;});
-    var med=amounts[Math.floor(amounts.length/2)];
-    if(med===0)return;
-    if(!amounts.every(function(a){return Math.abs(a-med)/med<0.15;}))return;
-
-    // Option B: Must span at least 60 days
-    var sorted=arr.slice().sort(function(a,b){return new Date(a.date)-new Date(b.date);});
-    var span=(new Date(sorted[sorted.length-1].date+'T12:00:00')-new Date(sorted[0].date+'T12:00:00'))/86400000;
-    if(span<60)return;
-
-    // Option B: Interval consistency — CV < 0.25
-    var intervals=[];
-    for(var i=1;i<sorted.length;i++){
-      intervals.push((new Date(sorted[i].date+'T12:00:00')-new Date(sorted[i-1].date+'T12:00:00'))/86400000);
-    }
-    var avgGap=intervals.reduce(function(s,x){return s+x;},0)/intervals.length;
-    if(avgGap<5||avgGap>400)return;
-    var variance=intervals.reduce(function(s,x){return s+Math.pow(x-avgGap,2);},0)/intervals.length;
-    var cv=Math.sqrt(variance)/avgGap;
-    if(cv<0.25)recKeys.add(k);
-  });
-
-  return recKeys;
-}
-
-let S={currentBalance:0,transactions:[],csvTxs:[],goals:[],accounts:{},activeTab:'dashboard',budgets:{},learnedRules:{},accountMeta:{},csvMappings:{}};
+let S={currentBalance:0,transactions:[],csvTxs:[],goals:[],accounts:{},activeTab:'dashboard',budgets:{},learnedRules:{},accountMeta:{},csvMappings:{},_recurCleared:false};
 let CHS={};
 let txFilter='all',txAccFilter='all',txCatFilter='all',txSearch='',dashPanel=null,anaCatOpen=null,foreMonth=new Date().getMonth(),foreYear=new Date().getFullYear(),stripDays=7,selectedAccView='all';
 let selDay=null;
 
 function save(){
-  var data={b:S.currentBalance,tx:S.transactions,csv:S.csvTxs,g:S.goals,acc:S.accounts,bud:S.budgets||{},rules:S.learnedRules||{},ameta:S.accountMeta||{},cmaps:S.csvMappings||{},ai:S._aiSettings||null};
+  var data={b:S.currentBalance,tx:S.transactions,csv:S.csvTxs,g:S.goals,acc:S.accounts,bud:S.budgets||{},rules:S.learnedRules||{},ameta:S.accountMeta||{},cmaps:S.csvMappings||{},ai:S._aiSettings||null,gc:S._gcalSettings||null,rc:S._recurCleared||false};
   // Try full save
   try{localStorage.setItem('flux3',JSON.stringify(data));triggerDriveAutoSave();return;}catch(e1){}
   try{localStorage.setItem('flux3',JSON.stringify(Object.assign({},data,{csv:S.csvTxs.slice(-200)})));triggerDriveAutoSave();return;}catch(e2){}
   try{localStorage.setItem('flux3',JSON.stringify(Object.assign({},data,{csv:[]})));triggerDriveAutoSave();return;}catch(e3){}
-  // All failed — data in memory only; still trigger Drive auto-save
   try{triggerDriveAutoSave();}catch(e){}
 }
 
@@ -1338,7 +1290,17 @@ function showStorageWarning(msg){
   document.body.appendChild(el);
   setTimeout(function(){if(el.parentNode)el.remove();},8000);
 }
-function load(){const d=localStorage.getItem('flux3');if(d){const p=JSON.parse(d);S.currentBalance=p.b||0;S.transactions=p.tx||[];S.csvTxs=p.csv||[];S.goals=p.g||[];S.accounts=p.acc||{};S.budgets=p.bud||{};S.learnedRules=p.rules||{};S.accountMeta=p.ameta||{};S.csvMappings=p.cmaps||{};if(p.ai)S._aiSettings=p.ai;rebuildAccounts();return true}return false}
+function clearAutoRecurring(){
+  if(S._recurCleared)return;
+  S.csvTxs.forEach(function(tx){
+    if(!tx._manualRecurring){tx.isRecurring=false;tx.recurring=false;}
+    delete tx._recurSuggested;delete tx._neverRecurring;
+  });
+  S._recurCleared=true;
+}
+
+function load(){const d=localStorage.getItem('flux3');if(d){const p=JSON.parse(d);S.currentBalance=p.b||0;S.transactions=p.tx||[];S.csvTxs=p.csv||[];S.goals=p.g||[];S.accounts=p.acc||{};S.budgets=p.bud||{};S.learnedRules=p.rules||{};S.accountMeta=p.ameta||{};S.csvMappings=p.cmaps||{};if(p.ai)S._aiSettings=p.ai;if(p.gc)S._gcalSettings=Object.assign({enabled:false,calendarId:null,calendarType:null,lastSync:null,syncDays:90},p.gc);S._recurCleared=p.rc||false;rebuildAccounts();
+  clearAutoRecurring();return true}return false}
 
 let txYear=new Date().getFullYear(),txMonth=new Date().getMonth();
 let anaYear=new Date().getFullYear(),anaMonth=new Date().getMonth();
@@ -1769,24 +1731,19 @@ function detectFreq(dates){
 
 // Returns one rule per recurring pattern with auto-detected frequency
 function csvRecurringRules(){
-  // Group ALL occurrences by normalized key to detect actual frequency
+  // Manual-only: only transactions the user explicitly marked recurring
   var groups={};
-  S.csvTxs.filter(function(tx){return(tx.isRecurring||tx.recurring)&&!isTransfer(tx)}).forEach(function(tx){
-    var key=tx.description.toLowerCase().replace(/[^a-z0-9]/g,'').substring(0,22)+'|'+(tx.account||'');
+  S.csvTxs.filter(function(tx){return(tx.isRecurring||tx.recurring)&&!isTransfer(tx);}).forEach(function(tx){
+    var key=(tx.description||'').toLowerCase().replace(/[^a-z0-9]/g,'').substring(0,22)+'|'+(tx.account||'');
     if(!groups[key])groups[key]=[];
     groups[key].push(tx);
   });
   var result=[];
   Object.values(groups).forEach(function(txs){
-    // Only project if there are 4+ occurrences and all confirmed recurring
-    if(txs.length<4)return;
-    // Don't project _recurSuggested — only project confirmed isRecurring
-    var confirmed=txs.filter(function(t){return t.isRecurring||t.recurring;});
-    if(confirmed.length<4)return;
-    var sorted=txs.slice().sort(function(a,b){return new Date(a.date)-new Date(b.date)});
-    var freq=detectFreq(sorted.map(function(t){return t.date}));
-    var latest=sorted[sorted.length-1];
-    result.push(Object.assign({},latest,{recurring:true,isRecurring:true,frequency:freq}));
+    if(txs.length<2)return;
+    var sorted=txs.slice().sort(function(a,b){return new Date(a.date)-new Date(b.date);});
+    var freq=detectFreq(sorted.map(function(t){return t.date;}));
+    result.push(Object.assign({},sorted[sorted.length-1],{recurring:true,isRecurring:true,frequency:freq}));
   });
   return result;
 }
@@ -2597,10 +2554,28 @@ function rTx(){
   +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><div style="position:relative;flex:1"><span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--tx3);font-size:14px">🔍</span><input id="tx-search-inp" value="'+txSearch+'" oninput="txSearch=this.value;rTx()" placeholder="Search transactions, categories..." style="width:100%;padding:9px 12px 9px 32px;border:1.5px solid var(--bd);border-radius:8px;font-size:13px;box-sizing:border-box;font-family:Plus Jakarta Sans,sans-serif;background:var(--sf);color:var(--tx)"></div>'+(txSearch?'<button onclick="txSearch=\'\';document.getElementById(\'tx-search-inp\').value=\'\';rTx()" style="padding:8px 12px;border:1.5px solid #fecaca;border-radius:8px;background:#fef2f2;color:#dc2626;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">✕ Clear</button>':'')+'</div>'
   +budOverviewHtml
   +cboxHtml
-  +'<div class="acc-tab"><button class="acc-t '+(txAccFilter==='all'?'on':'')+'" onclick="txAccFilter=\'all\';rTx()">All Accounts</button>'
-  +Object.entries(getAllAccounts()).map(function(e){var num=e[0],info=e[1];return'<button class="acc-t '+(txAccFilter===num?'on':'')+'" onclick="txAccFilter=\''+num+'\';rTx()" style="'+(txAccFilter===num?'border-color:'+info.color+';color:'+info.color+';background:'+info.color+'12':'')+'">'+''+info.short+' ••••'+num+'</button>';}).join('')
-  +'<button class="acc-t '+(txAccFilter==='manual'?'on':'')+'" onclick="txAccFilter=\'manual\';rTx()">Manual</button></div>'
-  +'<div class="tf"><button class="fb '+(txFilter==='all'?'on':'')+'" onclick="txFilter=\'all\';rTx()">All</button><button class="fb '+(txFilter==='purchase'?'on':'')+'" onclick="txFilter=\'purchase\';rTx()">Purchase</button><button class="fb '+(txFilter==='payment'?'on':'')+'" onclick="txFilter=\'payment\';rTx()">Payment</button><button class="fb '+(txFilter==='credit'?'on':'')+'" onclick="txFilter=\'credit\';rTx()">Credit</button><button class="fb '+(txFilter==='transfer'?'on':'')+'" onclick="txFilter=\'transfer\';rTx()">Transfer</button><button class="fb '+(txFilter==='interest'?'on':'')+'" onclick="txFilter=\'interest\';rTx()">Interest</button><button class="fb '+(txFilter==='recurring'?'on':'')+'" onclick="txFilter=\'recurring\';rTx()">↻ Recurring</button>'
+  +(function(){
+    var accts=getAllAccounts();
+    var ss='padding:8px 12px;border:1.5px solid var(--bd);border-radius:8px;font-size:12.5px;font-family:Plus Jakarta Sans,sans-serif;background:var(--sf);color:var(--tx);font-weight:600;cursor:pointer;flex:1;min-width:120px';
+    var ao='<option value="all"'+(txAccFilter==='all'?' selected':'')+'>All Accounts</option>';
+    Object.entries(accts).forEach(function(e){
+      var n=e[0],inf=e[1];
+      ao+='<option value="'+n+'"'+(txAccFilter===n?' selected':'')+'>'+escHtml(inf.name||inf.short||'Account')+' ••••'+n+'</option>';
+    });
+    ao+='<option value="manual"'+(txAccFilter==='manual'?' selected':'')+'>Manual Entries</option>';
+    var to='<option value="all"'+(txFilter==='all'?' selected':'')+'>All Types</option>'
+      +'<option value="purchase"'+(txFilter==='purchase'?' selected':'')+'>Purchase</option>'
+      +'<option value="payment"'+(txFilter==='payment'?' selected':'')+'>Payment</option>'
+      +'<option value="credit"'+(txFilter==='credit'?' selected':'')+'>Credit</option>'
+      +'<option value="transfer"'+(txFilter==='transfer'?' selected':'')+'>Transfer</option>'
+      +'<option value="interest"'+(txFilter==='interest'?' selected':'')+'>Interest</option>'
+      +'<option value="recurring"'+(txFilter==='recurring'?' selected':'')+'>&#8635; Recurring</option>';
+    return '<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">'
+      +'<select onchange="txAccFilter=this.value;rTx()" style="'+ss+'">'+ao+'</select>'
+      +'<select onchange="txFilter=this.value;rTx()" style="'+ss+'">'+to+'</select>'
+      +'<button onclick="openTransferAudit()" title="Audit transfers" style="padding:8px 10px;border:1.5px solid var(--bd);border-radius:8px;background:var(--sf);color:var(--tx3);cursor:pointer;font-size:13px;flex-shrink:0">&#128269;</button>'
+      +'</div>';
+  })()
   +'<span style="width:1px;height:18px;background:var(--bd);margin:0 2px"></span>'
   +allCats.slice(0,10).map(function(c){return'<button class="fb '+(txCatFilter===c?'on':'')+'" onclick="txCatFilter=\''+c+'\';rTx()">'+c+'</button>';}).join('')
   +(txCatFilter!=='all'?'<button class="fb on" style="color:var(--red);border-color:var(--red)" onclick="txCatFilter=\'all\';rTx()">✕ Clear</button>':'')
@@ -3084,10 +3059,15 @@ function rAna(){
     +(totalBudget>0?'<div style="width:80px;text-align:center"><div style="font-size:20px;font-weight:900;color:'+allBudColor+'">'+budPct+'%</div><div style="height:4px;background:var(--s3);border-radius:2px;margin-top:4px"><div style="height:4px;border-radius:2px;background:'+allBudColor+';width:'+Math.min(100,budPct)+'%"></div></div></div>':'')
     +'</div>'
     // Recurring card
-    +'<div class="cat-card-all" data-cat="recurring" onclick="openCatDrillDown(&apos;recurring&apos;)">'
-    +'<div style="flex:1">'
-    +'<div style="font-size:10.5px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">🔄 Recurring Charges</div>'
-    +'<div style="font-family:JetBrains Mono,monospace;font-size:22px;font-weight:900;color:#7c3aed">-'+fmo(recTotal)+'</div>'
+    +'<div class="cat-card-all" data-cat="recurring" onclick="openCatDrillDown(&apos;recurring&apos;)" style="border-color:#ede9fe;background:linear-gradient(135deg,var(--sf),#faf5ff);cursor:pointer">'
+  +'<div style="flex:1">'
+  +'<div style="font-size:10.5px;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px">&#8635; Recurring</div>'
+  +'<div style="font-family:JetBrains Mono,monospace;font-size:22px;font-weight:900;color:#7c3aed">-'+fmo(recTotal)+'</div>'
+  +'<div style="font-size:10.5px;color:var(--tx3);margin-top:2px">'+recTxsAna.length+' manually tagged</div>'
+  +'<div style="font-size:9.5px;color:#7c3aed;font-weight:600;margin-top:4px">Tag via &#9998; Edit Transaction</div>'
+  +'</div>'
+  +'<div style="font-size:30px;color:#7c3aed;opacity:.6">&#8635;</div>'
+  +'</div>'
     +'<div style="font-size:10.5px;color:var(--tx3);margin-top:1px">'+recTxsAna.length+' recurring this month</div>'
     +'</div>'
     +'<div style="font-size:28px">↻</div>'
@@ -3567,26 +3547,25 @@ function appendCSV(){
   S.csvTxs=[...S.csvTxs,...toAdd];
   clearGroupsCache();rebuildAccounts();
   // Apply recurring suggestions after import
-  var suggested=applySuggestedRecurring();
+  
   jumpToMostRecentMonth();
   try{save();}catch(e){}
   closeMo();updSidebar();sw(S.activeTab);
   if(newAccts.length)setTimeout(function(){openAccountSettings();},400);
   var msg='Import complete — '+toAdd.length+' new transactions added.'+(dupeCount>0?' '+dupeCount+' duplicates skipped.':'');
-  if(suggested>0)msg+=' <a href="#" onclick="openRecurringReview()" style="color:#2563eb;font-weight:700">↻ Review '+suggested+' suggested recurring charges →</a>';
-  if(toAdd.length>0||dupeCount>0||suggested>0)showStorageWarning(msg);
+  if(toAdd.length>0||dupeCount>0)showStorageWarning(msg);
 }
 function replaceCSV(){
   if(!window._pendingCSV)return;
   var newAccts=detectAndRegisterNewAccounts(window._pendingCSV);
   S.csvTxs=window._pendingCSV;
   clearGroupsCache();rebuildAccounts();
-  var suggested2=applySuggestedRecurring();
+  
   jumpToMostRecentMonth();
   try{save();}catch(e){}
   closeMo();updSidebar();sw(S.activeTab);
   if(newAccts.length)setTimeout(function(){openAccountSettings();},400);
-  if(suggested2>0)showStorageWarning('Import complete. <a href="#" onclick="openRecurringReview()" style="color:#2563eb;font-weight:700">↻ Review '+suggested2+' suggested recurring charges →</a>');
+  showStorageWarning('Import complete — '+S.csvTxs.length+' transactions loaded.');
 }
 
 function jumpToMostRecentMonth(){
@@ -5140,144 +5119,12 @@ function updMobileNav(tab){
 // RECURRING REVIEW ENGINE (Option C)
 // ════════════════════════════════════════════════════════════════
 
-function applySuggestedRecurring(){
-  // Run the strict detector across all CSV transactions
-  var recKeys=detectRecurring(S.csvTxs);
-  var norm=function(s){return s.toLowerCase().replace(/[#\d]+/g,'#').replace(/\s+/g,' ').trim().substring(0,30);};
-  var count=0;
-  S.csvTxs.forEach(function(tx){
-    var k=norm(tx.description||'');
-    if(recKeys.has(k)){
-      // Only suggest if user hasn't confirmed or rejected
-      if(!tx._neverRecurring&&!tx.isRecurring&&!tx.recurring){
-        tx._recurSuggested=true;
-        count++;
-      }
-    } else {
-      // Clear stale suggestions that no longer qualify
-      if(tx._recurSuggested&&!tx.isRecurring)tx._recurSuggested=false;
-    }
-  });
-  return count;
-}
 
-function getRecurringSuggestions(){
-  var norm=function(s){return s.toLowerCase().replace(/[#\d]+/g,'#').replace(/\s+/g,' ').trim().substring(0,30);};
-  var groups={};
-  S.csvTxs.filter(function(tx){return tx._recurSuggested;}).forEach(function(tx){
-    var k=norm(tx.description||'');
-    if(!groups[k])groups[k]={key:k,txs:[],name:tx.description,category:tx.category,amount:Math.abs(tx.amount)};
-    groups[k].txs.push(tx);
-  });
-  return Object.values(groups).sort(function(a,b){return b.txs.length-a.txs.length;});
-}
 
-function approveRecurring(key){
-  var norm=function(s){return s.toLowerCase().replace(/[#\d]+/g,'#').replace(/\s+/g,' ').trim().substring(0,30);};
-  var freq=detectFreq(S.csvTxs.filter(function(tx){return norm(tx.description||'')===key;}).map(function(t){return t.date;}));
-  S.csvTxs.forEach(function(tx){
-    if(norm(tx.description||'')===key){
-      tx.isRecurring=true;tx.recurring=true;tx._recurSuggested=false;tx.frequency=freq;
-    }
-  });
-  try{save();}catch(e){}
-  openRecurringReview();
-}
 
-function rejectRecurring(key){
-  var norm=function(s){return s.toLowerCase().replace(/[#\d]+/g,'#').replace(/\s+/g,' ').trim().substring(0,30);};
-  S.csvTxs.forEach(function(tx){
-    if(norm(tx.description||'')===key){
-      tx._neverRecurring=true;tx._recurSuggested=false;tx.isRecurring=false;tx.recurring=false;
-    }
-  });
-  try{save();}catch(e){}
-  openRecurringReview();
-}
 
-function approveAllRecurring(){
-  getRecurringSuggestions().forEach(function(g){approveRecurring(g.key);});
-}
 
-function rejectAllRecurring(){
-  getRecurringSuggestions().forEach(function(g){rejectRecurring(g.key);});
-}
 
-function openRecurringReview(){
-  var groups=getRecurringSuggestions();
-  var existing=document.getElementById('recurring-review-modal');
-  if(existing)existing.remove();
-
-  if(!groups.length){
-    showStorageWarning('✅ No pending recurring charge suggestions.');
-    if(S.activeTab==='transactions')rTx();
-    return;
-  }
-
-  var norm=function(s){return s.toLowerCase().replace(/[#\d]+/g,'#').replace(/\s+/g,' ').trim().substring(0,30);};
-  var rows=groups.map(function(g){
-    var txs=g.txs.slice().sort(function(a,b){return new Date(a.date)-new Date(b.date);});
-    var amounts=txs.map(function(t){return Math.abs(t.amount);});
-    var avgAmt=amounts.reduce(function(s,v){return s+v;},0)/amounts.length;
-    var freq=detectFreq(txs.map(function(t){return t.date;}));
-    var firstDate=txs[0].date;var lastDate=txs[txs.length-1].date;
-    var safeName=g.name.substring(0,42);
-    var safeKey=g.key.replace(/'/g,"\\'");
-    return '<tr style="border-bottom:1px solid var(--bd)">'
-      +'<td style="padding:10px 12px">'
-        +'<div style="font-size:13px;font-weight:700;color:var(--tx)">'+safeName+'</div>'
-        +'<div style="font-size:10.5px;color:var(--tx3);margin-top:2px">'+g.category+' · '+fd(firstDate)+' → '+fd(lastDate)+'</div>'
-      +'</td>'
-      +'<td style="padding:10px 12px;font-family:JetBrains Mono,monospace;font-size:13px;font-weight:700;color:var(--tx)">'+fmo(avgAmt)+'</td>'
-      +'<td style="padding:10px 12px;font-size:12px;color:var(--pri);font-weight:600">'+freq+'</td>'
-      +'<td style="padding:10px 12px;font-size:12px;color:var(--tx3)">'+txs.length+'×</td>'
-      +'<td style="padding:10px 8px">'
-        +'<div style="display:flex;gap:6px">'
-          +'<button onclick="approveRecurring(\''+safeKey+'\')" style="padding:6px 12px;border:none;border-radius:7px;background:#16a34a;color:#fff;font-size:11.5px;font-weight:700;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif">✅ Recurring</button>'
-          +'<button onclick="rejectRecurring(\''+safeKey+'\')" style="padding:6px 12px;border:1.5px solid #fecaca;border-radius:7px;background:#fef2f2;color:#dc2626;font-size:11.5px;font-weight:700;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif">❌ Not recurring</button>'
-        +'</div>'
-      +'</td>'
-      +'</tr>';
-  }).join('');
-
-  var html='<div id="recurring-review-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px">'
-    +'<div style="background:var(--bg);border-radius:16px;width:820px;max-width:100%;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.2)">'
-    +'<div style="padding:16px 20px;border-bottom:1px solid var(--bd);display:flex;align-items:flex-start;justify-content:space-between">'
-      +'<div>'
-        +'<div style="font-size:15px;font-weight:800;color:var(--tx)">↻ Review Recurring Charge Suggestions</div>'
-        +'<div style="font-size:11.5px;color:var(--tx3);margin-top:3px">'+groups.length+' patterns detected · Confirm or dismiss each one. Dismissed charges are never suggested again.</div>'
-      +'</div>'
-      +'<button onclick="document.getElementById(\'recurring-review-modal\').remove()" style="width:30px;height:30px;border:none;background:none;cursor:pointer;font-size:18px;color:var(--tx3);flex-shrink:0">✕</button>'
-    +'</div>'
-    +'<div style="padding:10px 16px;background:#f0fdf4;border-bottom:1px solid #bbf7d0;font-size:11.5px;color:#166534">'
-      +'💡 <strong>How it works:</strong> FLUX requires 4+ occurrences, consistent amounts (±15%), and regular intervals spanning 60+ days before suggesting a pattern as recurring. Only bill-type categories qualify.'
-    +'</div>'
-    +'<div style="overflow-y:auto;flex:1">'
-      +'<table style="width:100%;border-collapse:collapse">'
-      +'<thead style="position:sticky;top:0;background:var(--sf);z-index:1">'
-        +'<tr style="border-bottom:2px solid var(--bd)">'
-          +'<th style="padding:9px 12px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Merchant / Description</th>'
-          +'<th style="padding:9px 12px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Avg Amount</th>'
-          +'<th style="padding:9px 12px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Frequency</th>'
-          +'<th style="padding:9px 12px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Count</th>'
-          +'<th style="padding:9px 12px;text-align:left;font-size:10.5px;color:var(--tx3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Decision</th>'
-        +'</tr>'
-      +'</thead>'
-      +'<tbody>'+rows+'</tbody>'
-      +'</table>'
-    +'</div>'
-    +'<div style="padding:12px 20px;border-top:1px solid var(--bd);display:flex;gap:8px;justify-content:space-between;align-items:center">'
-      +'<div style="font-size:11px;color:var(--tx3)">You can access this review anytime from the ↻ Recurring filter in Transactions.</div>'
-      +'<div style="display:flex;gap:8px">'
-        +'<button onclick="approveAllRecurring()" style="padding:8px 16px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-size:12.5px;font-weight:700;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif">✅ Approve All</button>'
-        +'<button onclick="rejectAllRecurring()" style="padding:8px 16px;border:1.5px solid #fecaca;border-radius:8px;background:#fef2f2;color:#dc2626;font-size:12.5px;font-weight:700;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif">❌ Reject All</button>'
-        +'<button onclick="document.getElementById(\'recurring-review-modal\').remove()" style="padding:8px 16px;border:1.5px solid var(--bd);border-radius:8px;background:var(--sf);font-size:12.5px;font-weight:600;cursor:pointer;color:var(--tx2);font-family:Plus Jakarta Sans,sans-serif">Later</button>'
-      +'</div>'
-    +'</div>'
-    +'</div></div>';
-
-  document.body.insertAdjacentHTML('beforeend',html);
-}
 
 window.addEventListener('DOMContentLoaded',()=>{if(load()){document.getElementById('setup').style.display='none';document.getElementById('app').style.display='flex';updSidebar();sw('dashboard');setTimeout(function(){initGoogleAuth();updGoogleUI();setTimeout(function(){if(S._gcalSettings&&S._gcalSettings.enabled)gcalSyncAll(true);},2000);},800);}});
 </script>
