@@ -1875,7 +1875,7 @@ function detectFreq(dates){
 function csvRecurringRules(){
   // Manual-only: only transactions the user explicitly marked recurring
   var groups={};
-  S.csvTxs.filter(function(tx){return(tx.isRecurring||tx.recurring)&&BILL_CATEGORIES.has(tx.category||'')&&!isTransfer(tx);}).forEach(function(tx){
+  S.csvTxs.filter(function(tx){return(tx.isRecurring||tx.recurring)&&!isTransfer(tx);}).forEach(function(tx){
     var key=(tx.description||'').toLowerCase().replace(/[^a-z0-9]/g,'').substring(0,22)+'|'+(tx.account||'');
     if(!groups[key])groups[key]=[];
     groups[key].push(tx);
@@ -2427,37 +2427,66 @@ function isBillTx(tx){
 function getUpcomingBills(days){
   const s=today();
   const e=new Date(s.getFullYear(),s.getMonth(),s.getDate()+days,23,59,59,999);
-  const res=[];const seen=new Set();
-  S.transactions.filter(isBillTx).forEach(function(tx){
+  const res=[];
+  // Three dedup sets: exact key, amount+date+account fallback, and name+date+account
+  const seenKeys=new Set();
+  function billKey(tx,d){
+    var desc=normalizeDesc(tx.name||tx.description||'').substring(0,20);
+    var amt=Math.round(Math.abs(tx.amount||0));
+    var acct=tx.account||'';
+    var dt=d.toISOString().substring(0,10);
+    return desc+'|'+dt+'|'+amt+'|'+acct;
+  }
+  function billKeyAmt(tx,d){
+    // Fallback: same amount + date + account catches name variations of same bill
+    var amt=Math.round(Math.abs(tx.amount||0));
+    var acct=tx.account||'';
+    var dt=d.toISOString().substring(0,10);
+    return 'AMT|'+dt+'|'+amt+'|'+acct;
+  }
+  function addBill(tx){
     getOcc(tx,s,e).forEach(function(d){
-      var k=normalizeDesc(tx.name||tx.description||'')+'_'+d.toISOString().substring(0,10);
-      if(!seen.has(k)&&d>=s&&d<=e){seen.add(k);res.push(Object.assign({},tx,{dueDate:d}));}
+      if(d<s||d>e)return;
+      var k1=billKey(tx,d);
+      var k2=billKeyAmt(tx,d);
+      if(seenKeys.has(k1)||seenKeys.has(k2))return;
+      seenKeys.add(k1);seenKeys.add(k2);
+      res.push(Object.assign({},tx,{dueDate:d}));
     });
-  });
-  csvRecurringRules().filter(isBillTx).forEach(function(tx){
-    getOcc(tx,s,e).forEach(function(d){
-      var k=normalizeDesc(tx.name||tx.description||'')+'_'+d.toISOString().substring(0,10);
-      if(!seen.has(k)&&d>=s&&d<=e){seen.add(k);res.push(Object.assign({},tx,{dueDate:d}));}
-    });
-  });
+  }
+  S.transactions.filter(isBillTx).forEach(addBill);
+  csvRecurringRules().filter(isBillTx).forEach(addBill);
   return res.sort(function(a,b){return a.dueDate-b.dueDate;});
 }
 
 function getRemainingMonthBills(){
   const now=today();const e=new Date(now.getFullYear(),now.getMonth()+1,0);e.setHours(23,59,59,999);
-  const res=[];const seen=new Set();
-  S.transactions.filter(isBillTx).forEach(function(tx){
+  const res=[];
+  const seenKeys=new Set();
+  function billKey(tx,d){
+    var desc=normalizeDesc(tx.name||tx.description||'').substring(0,20);
+    var amt=Math.round(Math.abs(tx.amount||0));
+    var acct=tx.account||'';
+    var dt=d.toISOString().substring(0,10);
+    return desc+'|'+dt+'|'+amt+'|'+acct;
+  }
+  function billKeyAmt(tx,d){
+    var amt=Math.round(Math.abs(tx.amount||0));
+    var acct=tx.account||'';
+    var dt=d.toISOString().substring(0,10);
+    return 'AMT|'+dt+'|'+amt+'|'+acct;
+  }
+  function addBill(tx){
     getOcc(tx,now,e).forEach(function(d){
-      var k=normalizeDesc(tx.name||tx.description||'')+'_'+d.toISOString().substring(0,10);
-      if(!seen.has(k)){seen.add(k);res.push(Object.assign({},tx,{dueDate:d}));}
+      var k1=billKey(tx,d);
+      var k2=billKeyAmt(tx,d);
+      if(seenKeys.has(k1)||seenKeys.has(k2))return;
+      seenKeys.add(k1);seenKeys.add(k2);
+      res.push(Object.assign({},tx,{dueDate:d}));
     });
-  });
-  csvRecurringRules().filter(isBillTx).forEach(function(tx){
-    getOcc(tx,now,e).forEach(function(d){
-      var k=normalizeDesc(tx.name||tx.description||'')+'_'+d.toISOString().substring(0,10);
-      if(!seen.has(k)){seen.add(k);res.push(Object.assign({},tx,{dueDate:d}));}
-    });
-  });
+  }
+  S.transactions.filter(isBillTx).forEach(addBill);
+  csvRecurringRules().filter(isBillTx).forEach(addBill);
   return res.sort(function(a,b){return a.dueDate-b.dueDate;});
 }
 
@@ -3684,16 +3713,19 @@ function normalizeDate(s){
 }
 
 
+// Shared dedup signature: account|date|abs-amount-cents|normalized-desc
+function txSig(t){
+  var desc=normalizeDesc(t.description||t.name||'').substring(0,30).toUpperCase();
+  var amt=Math.round(Math.abs(t.amount||0)*100);
+  return (t.account||'')+'|'+t.date+'|'+amt+'|'+desc;
+}
+
+
 function appendCSV(){
   if(!window._pendingCSV)return;
   var newAccts=detectAndRegisterNewAccounts(window._pendingCSV);
 
   // Build strong dedup signature: account|date|rounded-abs-amount|normalized-desc-30chars
-  function txSig(t){
-    var desc=normalizeDesc(t.description||t.name||'').substring(0,30).toUpperCase();
-    var amt=Math.round(Math.abs(t.amount||0)*100); // cents, abs value — handles sign flips
-    return (t.account||'')+'|'+t.date+'|'+amt+'|'+desc;
-  }
 
   var existingIds  = new Set(S.csvTxs.map(function(t){return t.id;}));
   var existingSigs = new Set(S.csvTxs.map(txSig));
@@ -4670,7 +4702,6 @@ function buildFluxContext(){
   return ctx;
 }
 
-function closeMo(){document.getElementById('modal-overlay').classList.remove('open')}
 function handleMO(e){if(e.target===document.getElementById('modal-overlay'))closeMo()}
 
 function setupGoogleSignIn(){
@@ -5299,11 +5330,6 @@ function updMobileNav(tab){
 
 function openDuplicateReview(){
   // Build signature map — same sig = potential duplicate
-  function txSig(t){
-    var desc=normalizeDesc(t.description||t.name||'').substring(0,30).toUpperCase();
-    var amt=Math.round(Math.abs(t.amount||0)*100);
-    return (t.account||'')+'|'+t.date+'|'+amt+'|'+desc;
-  }
   var sigMap={};
   S.csvTxs.forEach(function(t){
     var s=txSig(t);
@@ -5363,11 +5389,6 @@ function removeDupes(btn){
 }
 
 function removeAllDupes(){
-  function txSig(t){
-    var desc=normalizeDesc(t.description||t.name||'').substring(0,30).toUpperCase();
-    var amt=Math.round(Math.abs(t.amount||0)*100);
-    return (t.account||'')+'|'+t.date+'|'+amt+'|'+desc;
-  }
   var seen=new Set();
   var before=S.csvTxs.length;
   S.csvTxs=S.csvTxs.filter(function(t){
