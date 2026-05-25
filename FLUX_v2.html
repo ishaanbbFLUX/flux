@@ -3015,8 +3015,8 @@ function rAna(){
   const catStats=getCatStats(anaYear,anaMonth);
   const thisInc=monthInc(anaYear,anaMonth);
   const thisExp=monthExp(anaYear,anaMonth);
-  const allRec=detectRecurring(S.csvTxs);
-  const recTxs=S.csvTxs.filter(tx=>{const norm=tx.description.toLowerCase().replace(/[#\d]+/g,'#').replace(/\s+/g,' ').trim().substring(0,30);return allRec.has(norm)});
+  // recTxs = manually-tagged recurring only (detectRecurring removed — manual-only mode)
+  const recTxs=S.csvTxs.filter(function(tx){return(tx.isRecurring||tx.recurring)&&!isTransfer(tx);});
   const billCandidates=S.csvTxs.filter(tx=>tx.account==='1066'&&tx.isBill).reduce((acc,tx)=>{const k=tx.description.substring(0,25);if(!acc[k])acc[k]={...tx,count:0};acc[k].count++;return acc},{});
   const needs_=NEEDS_CATS,wants_=WANTS_CATS;
   const needs=Object.entries(ecat).filter(([c])=>needs_.includes(c)).reduce((s,[,v])=>s+v,0);
@@ -3068,11 +3068,7 @@ function rAna(){
   +'</div>'
   +'<div style="font-size:30px;color:#7c3aed;opacity:.6">&#8635;</div>'
   +'</div>'
-    +'<div style="font-size:10.5px;color:var(--tx3);margin-top:1px">'+recTxsAna.length+' recurring this month</div>'
-    +'</div>'
-    +'<div style="font-size:28px">↻</div>'
-    +'</div>'
-    +'</div>';
+  +'</div>';
 
   // Individual category cards
   catCardsHtml+='<div class="cat-cards-grid" style="margin-top:10px">';
@@ -3139,7 +3135,7 @@ ${(function(){
   }).join('');
 })()}
 </div>
-/div>
+</div>
 <div class="cg3">
 <div class="cc"><div class="ch"><div class="ct">Expense Categories</div></div>
 ${Object.keys(ecat).length?'<div style="height:200px;position:relative"><canvas id="ch-ana-cat" role="img" aria-label="Expense categories donut"></canvas></div>':'<div class="empty-state" style="padding:30px;color:var(--tx3)">No expense data</div>'}
