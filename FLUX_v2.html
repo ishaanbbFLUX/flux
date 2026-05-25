@@ -826,14 +826,31 @@ function openAccountSettings(){
   Object.assign(allForEdit,ACCOUNTS);
   Object.assign(allForEdit,S.accountMeta||{});
   S.csvTxs.forEach(function(tx){if(tx.account&&!allForEdit[tx.account])allForEdit[tx.account]=getAccountInfo(tx.account);});
-  var rows=Object.entries(allForEdit).filter(function(e){return!e[1].hidden;}).map(function(e){
+  // Sort accounts by sortOrder (lower = higher in sidebar)
+  var sortedEntries=Object.entries(allForEdit).filter(function(e){return!e[1].hidden;});
+  sortedEntries.sort(function(a,b){
+    var ao=a[1].sortOrder!=null?a[1].sortOrder:9999;
+    var bo=b[1].sortOrder!=null?b[1].sortOrder:9999;
+    return ao-bo;
+  });
+  var rows=sortedEntries.map(function(e){
     var num=e[0],info=e[1];
     var bal=S.accounts[num]?S.accounts[num].balance:null;
-    return '<div id="arow-'+num+'" style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #f1f5f9">'
-    +'<div style="width:12px;height:12px;border-radius:50%;background:'+info.color+';flex-shrink:0"></div>'
-    +'<div style="flex:1">'
-    +'<input id="aname-'+num+'" value="'+info.name+'" style="width:100%;padding:5px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12.5px;font-family:Plus Jakarta Sans,sans-serif;color:#0f172a;background:#fff">'
-    +'<div style="font-size:10.5px;color:#94a3b8;margin-top:2px">••••'+num+(bal!==null?' · '+fmo(bal):'')+'</div>'
+    var curAdj=info.balanceAdj||'';
+    return '<div id="arow-'+num+'" style="display:flex;align-items:flex-start;gap:8px;padding:10px 0;border-bottom:1px solid #f1f5f9">'
+    // Reorder buttons
+    +'<div style="display:flex;flex-direction:column;gap:2px;padding-top:2px;flex-shrink:0">'
+    +'<button data-mnum="'+num+'" data-mdir="up" onclick="moveAccount(this.dataset.mnum,this.dataset.mdir)" title="Move up" style="width:22px;height:22px;border:1px solid #e2e8f0;border-radius:4px;background:#f8fafc;cursor:pointer;font-size:11px;line-height:1;color:#64748b;display:flex;align-items:center;justify-content:center">↑</button>'
+    +'<button data-mnum="'+num+'" data-mdir="down" onclick="moveAccount(this.dataset.mnum,this.dataset.mdir)" title="Move down" style="width:22px;height:22px;border:1px solid #e2e8f0;border-radius:4px;background:#f8fafc;cursor:pointer;font-size:11px;line-height:1;color:#64748b;display:flex;align-items:center;justify-content:center">↓</button>'
+    +'</div>'
+    +'<div style="width:10px;height:10px;border-radius:50%;background:'+info.color+';flex-shrink:0;margin-top:8px"></div>'
+    +'<div style="flex:1;min-width:0">'
+    +'<input id="aname-'+num+'" value="'+info.name+'" style="width:100%;padding:5px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12.5px;font-family:Plus Jakarta Sans,sans-serif;color:#0f172a;background:#fff;margin-bottom:4px">'
+    +'<div style="display:flex;align-items:center;gap:6px">'
+    +'<div style="font-size:10.5px;color:#94a3b8">••••'+num+(bal!==null?' · '+fmo(bal):'')+'</div>'
+    +'<input id="aadj-'+num+'" type="number" value="'+(curAdj!==''?curAdj:'')+'" placeholder="± Balance adjustment" title="Manually adjust this account balance" '
+    +'style="flex:1;padding:3px 6px;border:1px solid #e2e8f0;border-radius:5px;font-size:11px;font-family:Plus Jakarta Sans,sans-serif;color:#475569;background:#f8fafc">'
+    +'</div>'
     +'</div>'
     +'<div style="display:flex;flex-direction:column;gap:4px">'
     +'<select id="atype-'+num+'" data-acctnum="'+num+'" onchange="toggleAccCreditLimit(this.dataset.acctnum)" style="padding:5px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px;font-family:Plus Jakarta Sans,sans-serif">'
@@ -885,6 +902,42 @@ function openAccountSettings(){
   +'</div></div>';
   document.getElementById('modal-overlay').classList.add('open');
 }
+
+function moveAccount(num, dir){
+  if(!S.accountMeta)S.accountMeta={};
+  // Build current sorted order
+  var allForEdit={};
+  Object.assign(allForEdit,ACCOUNTS);
+  Object.assign(allForEdit,S.accountMeta||{});
+  S.csvTxs.forEach(function(tx){if(tx.account&&!allForEdit[tx.account])allForEdit[tx.account]=getAccountInfo(tx.account);});
+  var nums=Object.keys(allForEdit).filter(function(n){return!allForEdit[n].hidden;});
+  nums.sort(function(a,b){
+    var ao=(S.accountMeta[a]&&S.accountMeta[a].sortOrder!=null)?S.accountMeta[a].sortOrder:9999;
+    var bo=(S.accountMeta[b]&&S.accountMeta[b].sortOrder!=null)?S.accountMeta[b].sortOrder:9999;
+    return ao-bo;
+  });
+  var idx=nums.indexOf(String(num));
+  if(idx<0)return;
+  var swapIdx=dir==='up'?idx-1:idx+1;
+  if(swapIdx<0||swapIdx>=nums.length)return;
+  // Ensure both have sortOrder set
+  if(!S.accountMeta[nums[idx]])S.accountMeta[nums[idx]]=Object.assign({},getAccountInfo(nums[idx]));
+  if(!S.accountMeta[nums[swapIdx]])S.accountMeta[nums[swapIdx]]=Object.assign({},getAccountInfo(nums[swapIdx]));
+  // Swap sort orders
+  var tmp=S.accountMeta[nums[idx]].sortOrder!=null?S.accountMeta[nums[idx]].sortOrder:idx;
+  var swapVal=S.accountMeta[nums[swapIdx]].sortOrder!=null?S.accountMeta[nums[swapIdx]].sortOrder:swapIdx;
+  S.accountMeta[nums[idx]].sortOrder=swapVal;
+  S.accountMeta[nums[swapIdx]].sortOrder=tmp;
+  // Initialize any accounts without sortOrder
+  nums.forEach(function(n,i){
+    if(!S.accountMeta[n])S.accountMeta[n]=Object.assign({},getAccountInfo(n));
+    if(S.accountMeta[n].sortOrder==null)S.accountMeta[n].sortOrder=i;
+  });
+  try{save();}catch(e){}
+  updSidebar();
+  openAccountSettings(); // refresh modal to show new order
+}
+
 
 function deleteAccount(num){
   if(!confirm('Remove "'+getAccountInfo(num).name+'" from the sidebar? Its transactions stay in your data — this just hides the account.'))return;
@@ -957,7 +1010,9 @@ function saveAccountSettings(){
     var existing=S.accountMeta[num]||ACCOUNTS[num]||{color:ACC_COLORS[0]};
     var limitEl=document.getElementById('alimit-'+num);
     var creditLimit=limitEl&&limitEl.value?parseFloat(limitEl.value)||0:existing.creditLimit||0;
-    S.accountMeta[num]=Object.assign({},existing,{name:name,short:short,type:type,creditLimit:creditLimit});
+    var adjEl=document.getElementById('aadj-'+num);
+    var balanceAdj=adjEl&&adjEl.value!==''?parseFloat(adjEl.value)||0:0;
+    S.accountMeta[num]=Object.assign({},existing,{name:name,short:short,type:type,creditLimit:creditLimit,balanceAdj:balanceAdj});
   });
   try{save();}catch(e){}
   closeMo();updSidebar();sw(S.activeTab);
@@ -1742,9 +1797,15 @@ function rebuildAccounts(){
     }
   });
 
-  // Apply manual adjustments to final balance
+  // Apply manual adjustments from S.transactions
   Object.keys(accMap).forEach(function(acct){
     if(accMap[acct].manualAdj)accMap[acct].balance+=accMap[acct].manualAdj;
+  });
+
+  // Apply user-entered balance adjustments from account settings
+  Object.keys(accMap).forEach(function(acct){
+    var meta=S.accountMeta&&S.accountMeta[acct];
+    if(meta&&meta.balanceAdj)accMap[acct].balance+=meta.balanceAdj;
   });
 
   // Manual transactions with no account — adjust currentBalance directly
@@ -2024,7 +2085,13 @@ function updSidebar(){
   if(Object.keys(allAcc).length===0){
     html+='<div style="font-size:11.5px;color:var(--tx3);padding:10px 4px;text-align:center;line-height:1.6">No accounts yet.<br>Import a CSV to get started.</div>';
   } else {
-    Object.entries(allAcc).forEach(([num,info])=>{
+    // Sort by user-defined sortOrder before rendering
+    var sortedAccEntries=Object.entries(allAcc).sort(function(a,b){
+      var ao=(S.accountMeta&&S.accountMeta[a[0]]&&S.accountMeta[a[0]].sortOrder!=null)?S.accountMeta[a[0]].sortOrder:9999;
+      var bo=(S.accountMeta&&S.accountMeta[b[0]]&&S.accountMeta[b[0]].sortOrder!=null)?S.accountMeta[b[0]].sortOrder:9999;
+      return ao-bo;
+    });
+    sortedAccEntries.forEach(function(entry){var num=entry[0],info=entry[1];
       const bal=S.accounts[num]?.balance??null;
       const cnt=S.accounts[num]?.txCount??0;
       const isCreditCard=info.type==='credit card'||info.type==='credit'||info.type==='cc';
