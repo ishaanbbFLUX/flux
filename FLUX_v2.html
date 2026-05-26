@@ -1411,7 +1411,16 @@ function clearAutoRecurring(){
   S._recurCleared=true;
 }
 
-function load(){const d=localStorage.getItem('flux3');if(d){const p=JSON.parse(d);S.currentBalance=p.b||0;S.transactions=p.tx||[];S.csvTxs=p.csv||[];S.goals=p.g||[];S.accounts=p.acc||{};S.budgets=p.bud||{};S.learnedRules=p.rules||{};S.accountMeta=p.ameta||{};S.csvMappings=p.cmaps||{};if(p.ai)S._aiSettings=p.ai;if(p.gc)S._gcalSettings=Object.assign({enabled:false,calendarId:null,calendarType:null,lastSync:null,syncDays:90},p.gc);S._recurCleared=p.rc||false;rebuildAccounts();
+function load(){const d=localStorage.getItem('flux3');if(d){const p=JSON.parse(d);S.currentBalance=p.b||0;S.transactions=p.tx||[];S.csvTxs=p.csv||[];S.goals=p.g||[];S.accounts=p.acc||{};S.budgets=p.bud||{};S.learnedRules=p.rules||{};S.accountMeta=p.ameta||{};S.csvMappings=p.cmaps||{};if(p.ai)S._aiSettings=p.ai;if(p.gc)S._gcalSettings=Object.assign({enabled:false,calendarId:null,calendarType:null,lastSync:null,syncDays:90},p.gc);S._recurCleared=p.rc||false;
+  // Auto-dedup on every load — removes duplicates that snuck in from previous imports
+  var _seen=new Set();var _seenAmt=new Set();
+  S.csvTxs=S.csvTxs.filter(function(t){
+    var k1=txSig(t);
+    var k2='AMT|'+t.date+'|'+Math.round(Math.abs(t.amount||0)*100)+'|'+(t.account||'');
+    if(_seen.has(k1)||_seenAmt.has(k2))return false;
+    _seen.add(k1);_seenAmt.add(k2);return true;
+  });
+  rebuildAccounts();
   clearAutoRecurring();return true}return false}
 
 let txYear=new Date().getFullYear(),txMonth=new Date().getMonth();
