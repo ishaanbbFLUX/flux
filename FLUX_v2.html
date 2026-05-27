@@ -651,6 +651,7 @@ body{background:var(--bg);color:var(--tx);font-family:'Plus Jakarta Sans',sans-s
 
           <div style="margin-bottom:8px">
             <button class="imp-btn" onclick="openDuplicateReview()">🧹 Remove Duplicates</button>
+            <button class="imp-btn" onclick="clearAllRecurring()" style="color:#dc2626;border-color:#fecaca">↻ Clear All Recurring</button>
             <button class="imp-btn" onclick="exportData()">⬇️ Export Data</button>
             <div style="font-size:10px;color:var(--tx3);margin-top:2px;padding:0 2px">Save all your FLUX data as a JSON backup file.</div>
           </div>
@@ -5440,6 +5441,22 @@ function removeAllDupes(){
   var removed=before-S.csvTxs.length;
   closeMo();updSidebar();sw(S.activeTab);
   showStorageWarning('✅ Removed '+removed+' duplicate transaction'+(removed!==1?'s':'')+'. All numbers updated.');
+}
+
+
+function clearAllRecurring(){
+  if(!confirm('Remove ALL recurring flags from every transaction?\n\nYou can re-tag them manually using ✎ Edit Transaction.'))return;
+  var count=0;
+  [...S.csvTxs,...S.transactions].forEach(function(tx){
+    if(tx.isRecurring||tx.recurring){
+      tx.isRecurring=false;tx.recurring=false;tx.frequency=null;
+      delete tx._manualRecurring;
+      count++;
+    }
+  });
+  try{save();}catch(e){}
+  try{if(S.activeTab==='transactions')rTx();else if(S.activeTab==='dashboard')rDash();else if(S.activeTab==='analytics')rAna();}catch(e){}
+  showStorageWarning('✅ Cleared recurring from '+count+' transaction'+(count!==1?'s':'')+'. Tag them manually via ✎ Edit Transaction.');
 }
 
 
