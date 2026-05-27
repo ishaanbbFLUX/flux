@@ -1403,22 +1403,25 @@ function showStorageWarning(msg){
   setTimeout(function(){if(el.parentNode)el.remove();},8000);
 }
 function clearAutoRecurring(){
-  if(S._recurCleared)return;
+  // Runs every load — clears auto-set recurring from non-edited transactions
+  // _edited:true means user explicitly changed this transaction via edit modal → preserve
   S.csvTxs.forEach(function(tx){
-    if(!tx._manualRecurring){tx.isRecurring=false;tx.recurring=false;}
+    if(!tx._edited){
+      // Never auto-imported as recurring; user must tag manually
+      tx.isRecurring=false;tx.recurring=false;
+    }
     delete tx._recurSuggested;delete tx._neverRecurring;
   });
-  S._recurCleared=true;
 }
 
 function load(){const d=localStorage.getItem('flux3');if(d){const p=JSON.parse(d);S.currentBalance=p.b||0;S.transactions=p.tx||[];S.csvTxs=p.csv||[];S.goals=p.g||[];S.accounts=p.acc||{};S.budgets=p.bud||{};S.learnedRules=p.rules||{};S.accountMeta=p.ameta||{};S.csvMappings=p.cmaps||{};if(p.ai)S._aiSettings=p.ai;if(p.gc)S._gcalSettings=Object.assign({enabled:false,calendarId:null,calendarType:null,lastSync:null,syncDays:90},p.gc);S._recurCleared=p.rc||false;
-  // Auto-dedup on every load — removes duplicates that snuck in from previous imports
-  var _seen=new Set();var _seenAmt=new Set();
+  // Auto-dedup on every load — removes true duplicates by strong signature
+  // Uses only k1 (desc+date+amount+account) — k2 (amount-only) was too aggressive
+  var _seen=new Set();
   S.csvTxs=S.csvTxs.filter(function(t){
     var k1=txSig(t);
-    var k2='AMT|'+t.date+'|'+Math.round(Math.abs(t.amount||0)*100)+'|'+(t.account||'');
-    if(_seen.has(k1)||_seenAmt.has(k2))return false;
-    _seen.add(k1);_seenAmt.add(k2);return true;
+    if(_seen.has(k1))return false;
+    _seen.add(k1);return true;
   });
   rebuildAccounts();
   clearAutoRecurring();return true}return false}
@@ -2662,7 +2665,12 @@ function rTx(){
   var txs=[...S.csvTxs,...S.transactions].filter(function(t){var d=pd(t.date);return d>=ms&&d<=me;}).sort(function(a,b){return new Date(b.date)-new Date(a.date);});
   var allCats=[...new Set(txs.map(function(t){return t.category;}).filter(Boolean))].sort();
   if(txAccFilter!=='all')txs=txs.filter(function(t){return t.account===txAccFilter||(txAccFilter==='manual'&&!t.account);});
-  if(txFilter==='recurring'){txs=txs.filter(function(t){return t.isRecurring||t.recurring;});}
+  if(txFilter==='recurring'){
+    // Show ALL recurring transactions, not just current month
+    txs=[...S.csvTxs,...S.transactions].filter(function(t){
+      return(t.isRecurring||t.recurring)&&!isTransfer(t);
+    }).sort(function(a,b){return new Date(b.date)-new Date(a.date);});
+  }
   else if(txFilter!=='all'){txs=txs.filter(function(t){return classifyTxSimple(t)===txFilter;});}
   if(txCatFilter!=='all')txs=txs.filter(function(t){return t.category===txCatFilter;});
   if(txSearch&&txSearch.trim()){var q=txSearch.trim().toLowerCase();txs=txs.filter(function(t){return((t.name||t.description||'').toLowerCase().includes(q))||((t.category||'').toLowerCase().includes(q));});}
@@ -2759,6 +2767,28 @@ function rTx(){
   +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><div style="position:relative;flex:1"><span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--tx3);font-size:14px">🔍</span><input id="tx-search-inp" value="'+txSearch+'" oninput="txSearch=this.value;rTx()" placeholder="Search transactions, categories..." style="width:100%;padding:9px 12px 9px 32px;border:1.5px solid var(--bd);border-radius:8px;font-size:13px;box-sizing:border-box;font-family:Plus Jakarta Sans,sans-serif;background:var(--sf);color:var(--tx)"></div>'+(txSearch?'<button onclick="txSearch=\'\';document.getElementById(\'tx-search-inp\').value=\'\';rTx()" style="padding:8px 12px;border:1.5px solid #fecaca;border-radius:8px;background:#fef2f2;color:#dc2626;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">✕ Clear</button>':'')+'</div>'
   +budOverviewHtml
   +cboxHtml
+  // ── Recurring summary card ──
+  +(function(){
+    var allRec=[...S.csvTxs,...S.transactions].filter(function(t){
+      return(t.isRecurring||t.recurring)&&!isTransfer(t)&&!t.isIncome&&t.type!=='income';
+    });
+    var monthRec=allRec.filter(function(t){var d=pd(t.date);return d>=ms&&d<=me;});
+    var recTotal=monthRec.reduce(function(s,t){return s+Math.abs(t.amount||0);},0);
+    if(!allRec.length)return'';
+    var isActive=txFilter==='recurring';
+    return'<div onclick="txFilter=(txFilter===\'recurring\'?\'all\':\'recurring\');rTx()" '
+      +'style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:10px;margin-bottom:10px;cursor:pointer;'
+      +(isActive?'background:#f5f3ff;border:2px solid #7c3aed;':'background:var(--sf);border:1.5px solid #e2e8f0;')
+      +'">'
+      +'<div style="font-size:22px">↻</div>'
+      +'<div style="flex:1">'
+      +'<div style="font-size:12px;font-weight:700;color:'+(isActive?'#7c3aed':'var(--tx2)')+'">Recurring Bills'+(isActive?' (filtered)':'')+' — '+new Date(txYear,txMonth,1).toLocaleDateString("en-US",{month:"short",year:"numeric"})+'</div>'
+      +'<div style="font-size:11px;color:var(--tx3);margin-top:2px">'+monthRec.length+' this month · '+allRec.length+' total tagged</div>'
+      +'</div>'
+      +'<div style="font-family:JetBrains Mono,monospace;font-size:18px;font-weight:900;color:#7c3aed">-'+fmo(recTotal)+'</div>'
+      +'<div style="font-size:11px;color:#7c3aed;font-weight:700;white-space:nowrap">'+(isActive?'✕ Clear':'Show all →')+'</div>'
+      +'</div>';
+  })()
   +(function(){
     var accts=getAllAccounts();
     var ss='padding:8px 12px;border:1.5px solid var(--bd);border-radius:8px;font-size:12.5px;font-family:Plus Jakarta Sans,sans-serif;background:var(--sf);color:var(--tx);font-weight:600;cursor:pointer;flex:1;min-width:120px';
@@ -4032,7 +4062,7 @@ function saveUFTx(){
       var manIdx=S.transactions.findIndex(function(t){return t.id===editId;});
       if(csvIdx>=0){
         var orig=S.csvTxs[csvIdx];
-        S.csvTxs[csvIdx]=Object.assign({},orig,{name:name,description:name,amount:finalAmt,date:date,category:cat,type:type,isIncome:isInc,isTransfer:isTrf,isBill:type==='bill',recurring:rec,isRecurring:rec,frequency:freq,endDate:endDate,account:acct||orig.account,label:label||orig.label||null,_edited:true});
+        S.csvTxs[csvIdx]=Object.assign({},orig,{name:name,description:name,amount:finalAmt,date:date,category:cat,type:type,isIncome:isInc,isTransfer:isTrf,isBill:type==='bill',recurring:rec,isRecurring:rec,frequency:freq,endDate:endDate,account:acct||orig.account,label:label||orig.label||null,_edited:true,_manualRecurring:rec});
       } else if(manIdx>=0){
         S.transactions[manIdx]=Object.assign({},S.transactions[manIdx],{name:name,description:name,amount:finalAmt,date:date,category:cat,type:type,isIncome:isInc,isTransfer:isTrf,isBill:type==='bill',recurring:rec,isRecurring:rec,frequency:freq,endDate:endDate,account:acct||null,label:label||null});
       }
